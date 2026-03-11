@@ -43,7 +43,7 @@ public partial class Form1 : Form
     private CancellationTokenSource? _ytDlpCts;
     private int _lastWidth = 800;
     private int _lastHeight = 600;
-    private const string CURR_VERSION = "1.0.6";
+    private const string CURR_VERSION = "1.0.7";
 
     public Form1()
     {
@@ -1236,7 +1236,6 @@ public partial class Form1 : Form
     {
         try
         {
-            // GitHub API는 User-Agent를 필수로 요구합니다.
             if (!_httpClient.DefaultRequestHeaders.Contains("User-Agent"))
                 _httpClient.DefaultRequestHeaders.Add("User-Agent", "MMT-Updater");
 
@@ -1250,10 +1249,9 @@ public partial class Form1 : Form
 
             if (Version.TryParse(latestVersion, out var latest) && Version.TryParse(currentVersion, out var current))
             {
-                // 실질적인 숫자 비교 (1.05 == 1.05.0 으로 취급되도록 안전하게 비교)
                 if (latest.CompareTo(current) > 0)
                 {
-                    var result = MessageBox.Show($"새로운 업데이트(v{latestVersion})가 존재합니다.\n지금 다운로드하여 설치하시겠습니까?", 
+                    var result = MessageBox.Show($"새로운 업데이트(v{latestVersion})가 존재합니다.\n지금 다운로드하여 설치하시겠습니까?\n\n(설치 중 프로그램이 자동으로 종료 및 재시작됩니다.)", 
                         "업데이트 알림", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
 
                     if (result == DialogResult.Yes)
@@ -1272,12 +1270,100 @@ public partial class Form1 : Form
 
                         if (!string.IsNullOrEmpty(downloadUrl))
                         {
-                            string tempFile = Path.Combine(Path.GetTempPath(), $"MMT_Setup_v{latestVersion}.exe");
-                            var bytes = await _httpClient.GetByteArrayAsync(downloadUrl);
-                            await File.WriteAllBytesAsync(tempFile, bytes);
+                            // 1. 업데이트 전용 팝업 창 즉석 생성
+                            Form updateForm = new Form
+                            {
+                                Text = "소프트웨어 업데이트",
+                                Size = new Size(400, 180),
+                                StartPosition = FormStartPosition.CenterParent,
+                                FormBorderStyle = FormBorderStyle.FixedDialog,
+                                MaximizeBox = false,
+                                MinimizeBox = false,
+                                BackColor = Color.White
+                            };
 
-                            Process.Start(new ProcessStartInfo(tempFile) { UseShellExecute = true });
-                            Application.Exit();
+                            Label lblStatus = new Label
+                            {
+                                Text = $"신규 버전(v{latestVersion})을 준비 중입니다...",
+                                Location = new Point(20, 25),
+                                Size = new Size(360, 20),
+                                Font = new Font("Segoe UI", 10, FontStyle.Bold)
+                            };
+
+                            ProgressBar pbUpdate = new ProgressBar
+                            {
+                                Location = new Point(20, 60),
+                                Size = new Size(345, 25),
+                                Style = ProgressBarStyle.Continuous
+                            };
+
+                            Label lblPercent = new Label
+                            {
+                                Text = "기다려 주세요... 0%",
+                                Location = new Point(20, 95),
+                                Size = new Size(360, 20),
+                                ForeColor = Color.Gray
+                            };
+
+                            updateForm.Controls.AddRange(new Control[] { lblStatus, pbUpdate, lblPercent });
+                            updateForm.Show(); // 창 띄우기
+                            updateForm.Refresh();
+
+                            string tempFile = Path.Combine(Path.GetTempPath(), $"MMT_Setup_v{latestVersion}.exe");
+                            
+                            try
+                            {
+                                using (var downloadResponse = await _httpClient.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead))
+                                {
+                                    downloadResponse.EnsureSuccessStatusCode();
+                                    var totalBytes = downloadResponse.Content.Headers.ContentLength ?? -1L;
+                                    
+                                    using (var contentStream = await downloadResponse.Content.ReadAsStreamAsync())
+                                    using (var fileStream = new FileStream(tempFile, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true))
+                                    {
+                                        var buffer = new byte[8192];
+                                        var totalRead = 0L;
+                                        int read;
+                                        while ((read = await contentStream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                                        {
+                                            await fileStream.WriteAsync(buffer.AsMemory(0, read));
+                                            totalRead += read;
+                                            
+                                            if (totalBytes != -1)
+                                            {
+                                                int progress = (int)((totalRead * 100) / totalBytes);
+                                                
+                                                // UI 스레드에서 안전하게 업데이트
+                                                this.Invoke((MethodInvoker)delegate {
+                                                    pbUpdate.Value = progress;
+                                                    lblPercent.Text = $"다운로드 중... {progress}% ({totalRead / 1024 / 1024}MB / {totalBytes / 1024 / 1024}MB)";
+                                                    updateForm.Refresh();
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+
+                                updateForm.Close(); // 다운로드 완료 시 자동 닫기
+
+                                MessageBox.Show("업데이트 준비가 완료되었습니다.\n확인을 누르면 설치를 시작하고 최신 버전으로 다시 시작합니다.", 
+                                    "준비 완료", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                                var startInfo = new ProcessStartInfo(tempFile)
+                                {
+                                    Arguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-",
+                                    UseShellExecute = true,
+                                    Verb = "runas"
+                                };
+                                
+                                Process.Start(startInfo);
+                                Application.Exit();
+                            }
+                            catch (Exception ex)
+                            {
+                                updateForm.Close();
+                                MessageBox.Show($"다운로드 중 오류가 발생했습니다: {ex.Message}", "업데이트 실패");
+                            }
                         }
                     }
                 }
@@ -1287,9 +1373,9 @@ public partial class Form1 : Form
                 }
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            if (manual) MessageBox.Show("업데이트 서버에 연결할 수 없습니다.", "오류");
+            if (manual) MessageBox.Show($"업데이트 확인 중 오류가 발생했습니다: {ex.Message}", "오류");
         }
     }
 
