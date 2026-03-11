@@ -43,7 +43,7 @@ public partial class Form1 : Form
     private CancellationTokenSource? _ytDlpCts;
     private int _lastWidth = 800;
     private int _lastHeight = 600;
-    private const string CURR_VERSION = "1.0.4";
+    private const string CURR_VERSION = "1.0.5";
 
     public Form1()
     {
@@ -100,6 +100,9 @@ public partial class Form1 : Form
 
         // Initialize Tab Active Styles
         UpdateTabStyles(btnTabYoutube);
+
+        // [속도 최적화] 프로그램 시작 시 WebView2 엔진 미리 예열 (비공개 모드 클릭 시 렉 방지)
+        _ = PreInitializeWebView2Async();
 
         cmbQuality.IntegralHeight = false;
         cmbQuality.MaxDropDownItems = 10;
@@ -1515,6 +1518,27 @@ public partial class Form1 : Form
         lblVideoTitle.Text = $"{_customTitle}\n채널: {_currentVideo.Author.ChannelTitle}\n길이: {_currentVideo.Duration}";
     }
 
+    private async Task PreInitializeWebView2Async()
+    {
+        try
+        {
+            if (webViewX.CoreWebView2 != null) return;
+
+            string webViewDataPath = Path.Combine(SettingsManager.UserDataFolder, "WebView2_Cache");
+            if (!Directory.Exists(webViewDataPath)) Directory.CreateDirectory(webViewDataPath);
+
+            var env = await CoreWebView2Environment.CreateAsync(null, webViewDataPath);
+            await webViewX.EnsureCoreWebView2Async(env);
+            
+            if (webViewX.CoreWebView2 != null)
+            {
+                webViewX.CoreWebView2.Settings.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+                webViewX.CoreWebView2.Settings.AreDevToolsEnabled = false;
+            }
+        }
+        catch { /* 비공개 모드 진입 시 다시 시도하므로 여기서는 무시 */ }
+    }
+
     private async void TglXPrivateMode_CheckedChanged(object sender, EventArgs e)
     {
         if (tglXPrivateMode.Checked)
@@ -1523,68 +1547,34 @@ public partial class Form1 : Form
             _lastWidth = this.Width;
             _lastHeight = this.Height;
 
-            // 브라우저 이용 편의를 위해 창 크기 확대 (사이드바 공간 + 브라우저 영역 넉넉히 확보)
-            this.MinimumSize = new Size(1500, 900);
-            if (this.Width < 1500) this.Width = 1500;
-            if (this.Height < 900) this.Height = 900;
+            this.MinimumSize = new Size(1100, 750);
+            if (this.Width < 1100) this.Width = 1100;
+            if (this.Height < 750) this.Height = 750;
 
-            // [사용자 요청] 사이드바 유지
-            panelSidebar.Visible = true;
-
-            // [UI 개선] 사이드바를 제외한 나머지 영역(panelMain)을 가득 채우도록 설정
-            panelXBrowser.Parent = panelMain; 
-            panelXBrowser.BackColor = Color.White;
+            panelXBrowser.Parent = this; 
+            panelXBrowser.BringToFront();
             panelXBrowser.Visible = true;
             panelXBrowser.Dock = DockStyle.Fill;
-            panelXBrowser.BringToFront();
-            
-            // 레이아웃 보강: 버튼들의 위치를 동적으로 설정하여 짤림 방지
-            panelXBrowser.Padding = new Padding(10, 60, 10, 100);
             webViewX.Dock = DockStyle.Fill;
             
-            // 상단 버튼 배치
-            btnXCapture.Location = new Point(10, 12);
-            btnXDownload.Location = new Point(145, 12);
-            btnXClose.Location = new Point(panelXBrowser.Width - btnXClose.Width - 25, 12);
-            btnXClose.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            btnXClose.Visible = true;
-            btnXClose.BringToFront();
-            
-            lblYtDlpStatus.Text = "X 비공개 모드 활성 (로그인 필수)";
-            
+            // 이미 초기화되어 있다면 바로 이동 (초고속)
             if (webViewX.CoreWebView2 != null) 
             {
-                webViewX.CoreWebView2.Stop(); // 이전 연결 찌꺼기 중단
+                webViewX.CoreWebView2.Stop();
                 webViewX.CoreWebView2.Navigate("https://x.com/login");
                 return;
             }
 
-            try
+            // 만약 예열이 안 됐을 경우에만 여기서 초기화
+            await PreInitializeWebView2Async();
+            
+            if (webViewX.CoreWebView2 != null)
             {
-                // WebView2 데이터를 LocalAppData 전용 하위 폴더에 저장 (권한 문제 완벽 해결 및 타 프로그램과의 충돌 방지)
-                string webViewDataPath = Path.Combine(SettingsManager.UserDataFolder, "WebView2_Cache");
-                if (!Directory.Exists(webViewDataPath)) Directory.CreateDirectory(webViewDataPath);
-
-                var env = await CoreWebView2Environment.CreateAsync(null, webViewDataPath);
-                await webViewX.EnsureCoreWebView2Async(env);
-                
-                // [X 보안 우회] 일반 크롬 브라우저처럼 보이게 설정하여 차단 및 에러 방지
-                webViewX.CoreWebView2.Settings.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-                webViewX.CoreWebView2.Settings.AreDevToolsEnabled = false; // 자동화 도구 감지 회피
-                
                 webViewX.CoreWebView2.Navigate("https://x.com/login");
-                
-                this.PerformLayout();
-                this.Refresh();
             }
-            catch (Exception ex)
-            {
-                // 브라우저 권한이나 파일 락 문제일 확률이 높으므로, 캐시 폴더를 다시 한번 체크하거나 안내합니다.
-                MessageBox.Show("브라우저 엔진(WebView2) 초기화 중 오류가 발생했습니다.\n\n" +
-                                "다른 프로그램이 해당 데이터를 사용 중이거나 런타임 설치가 필요할 수 있습니다.\n" +
-                                $"상세 에러: {ex.Message}", "브라우저 오류");
-                tglXPrivateMode.Checked = false;
-            }
+            
+            this.PerformLayout();
+            this.Refresh();
         }
         else
         {

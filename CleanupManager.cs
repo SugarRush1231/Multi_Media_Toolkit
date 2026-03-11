@@ -92,11 +92,20 @@ namespace YoutubeDownloader
         {
             Cleanup();
 
-            // Clear WebView2 Cache (Fixed to use the correct path we now use)
-            string webViewCache = Path.Combine(SettingsManager.UserDataFolder, "WebView2_Cache");
+            // [속도 최적화] WebView2 캐시 전체 삭제 대신, 민감 데이터(쿠키, 세션 등)만 선택적으로 삭제
+            // 이렇게 하면 브라우저 엔진 파일은 유지되어 다음 실행 속도가 획기적으로 빨라집니다.
+            string webViewCache = Path.Combine(SettingsManager.UserDataFolder, "WebView2_Cache", "EBWebView");
             if (Directory.Exists(webViewCache))
             {
-                try { Directory.Delete(webViewCache, true); } catch { }
+                string[] sensitiveFolders = { "Default", "Network", "Session Storage" };
+                foreach (var folder in sensitiveFolders)
+                {
+                    string target = Path.Combine(webViewCache, folder);
+                    if (Directory.Exists(target))
+                    {
+                        try { Directory.Delete(target, true); } catch { }
+                    }
+                }
             }
 
             // Clear App Temp
