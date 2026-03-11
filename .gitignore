@@ -11,9 +11,7 @@ dist/
 publish/
 
 # Executables (Large files that shouldn't be in Git)
-ffmpeg.exe
-ffprobe.exe
-yt-dlp.exe
+
 
 # Testing
 TestResults/
