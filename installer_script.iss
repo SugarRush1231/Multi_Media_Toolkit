@@ -33,10 +33,13 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; 빌드된 프로그램 파일들 (publish 폴더 내용물 전체)
-; 주의: ffmpeg, yt-dlp는 앱 시작 시 자동 다운로드하므로 인스톨러에서 제외하여 용량 다이어트 (약 300MB 절약)
 Source: ".\bin\Release\net10.0-windows\win-x64\publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; 아이콘 파일 포함
 Source: ".\mmt.ico"; DestDir: "{app}"; Flags: ignoreversion
+; 필수 도구 파일 포함 (Program Files 권한 문제 해결을 위해 직접 포함)
+Source: ".\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: ".\ffprobe.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: ".\yt-dlp.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyIcoName}"
