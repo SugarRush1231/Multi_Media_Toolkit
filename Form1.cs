@@ -43,6 +43,7 @@ public partial class Form1 : Form
     private CancellationTokenSource? _ytDlpCts;
     private int _lastWidth = 800;
     private int _lastHeight = 600;
+    private const string CURR_VERSION = "1.0.4";
 
     public Form1()
     {
@@ -75,8 +76,11 @@ public partial class Form1 : Form
         typeof(Control).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
             ?.SetValue(lvQueue, true, null);
 
-        AppDomain.CurrentDomain.ProcessExit += (s, e) => CleanupManager.Cleanup();
-        AppDomain.CurrentDomain.UnhandledException += (s, e) => CleanupManager.Cleanup();
+        AppDomain.CurrentDomain.ProcessExit += (s, e) => CleanupManager.FullSystemCleanup();
+        AppDomain.CurrentDomain.UnhandledException += (s, e) => CleanupManager.FullSystemCleanup();
+
+        this.Text = $"Multi Media Toolkit (v{CURR_VERSION})";
+        lblAbout.Text = $"Multi Media Toolkit v{CURR_VERSION}\r\nCreated by 김병석\r\n© {DateTime.Now.Year} all rights reserved.\r\n(kbs318@naver.com)";
     }
     
     private void Form1_Load(object sender, EventArgs e)
@@ -104,6 +108,9 @@ public partial class Form1 : Form
 
         // 시작 시 조용히 업데이트 확인
         _ = CheckForUpdateAsync(false);
+        
+        // 필수 도구(ffmpeg, yt-dlp 등) 체크 및 설치 가이드
+        _ = EnsureRequiredToolsAsync();
     }
 
     private void Form1_FormClosing(object sender, FormClosingEventArgs e)
@@ -115,7 +122,7 @@ public partial class Form1 : Form
         foreach (var job in _activeJobs) job.JobCts?.Cancel();
 
         // Perform final cleanup of processes and partial files
-        CleanupManager.Cleanup();
+        CleanupManager.FullSystemCleanup();
     }
 
     private void Panel_Paint(object sender, PaintEventArgs e)
@@ -127,6 +134,124 @@ public partial class Form1 : Form
             Color.FromArgb(200, 200, 200), 1, ButtonBorderStyle.Solid,
             Color.FromArgb(200, 200, 200), 1, ButtonBorderStyle.Solid,
             Color.FromArgb(200, 200, 200), 1, ButtonBorderStyle.Solid);
+    }
+
+    private async Task EnsureRequiredToolsAsync()
+    {
+        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        string projectRoot = Path.GetFullPath(Path.Combine(baseDir, "..", "..", ".."));
+        
+        string[] toolNames = { "ffmpeg.exe", "ffprobe.exe", "yt-dlp.exe" };
+        bool anyMissing = false;
+
+        foreach (var tool in toolNames)
+        {
+            string baseToolPath = Path.Combine(baseDir, tool);
+            string rootToolPath = Path.Combine(projectRoot, tool);
+
+            // 1. 프로젝트 루트에 있으면 실행 폴더로 복사
+            if (!File.Exists(baseToolPath) && File.Exists(rootToolPath))
+            {
+                try { File.Copy(rootToolPath, baseToolPath, true); } catch { }
+            }
+            // 2. 실행 폴더에 있으면 프로젝트 루트로 복사 (사용자 가시성 위함)
+            else if (File.Exists(baseToolPath) && !File.Exists(rootToolPath) && Directory.Exists(projectRoot))
+            {
+                try { File.Copy(baseToolPath, rootToolPath, true); } catch { }
+            }
+
+            if (!File.Exists(baseToolPath)) anyMissing = true;
+        }
+
+        if (anyMissing)
+        {
+            var result = MessageBox.Show(
+                "프로그램 운영에 필요한 필수 도구(FFmpeg, yt-dlp)가 설치되어 있지 않습니다.\n" +
+                "자동으로 다운로드하여 설치하시겠습니까?\n\n" +
+                "(약 1~2분 정도 소요되며, 완료 후 프로젝트 폴더에도 나타납니다.)",
+                "필수 도구 설치 안내",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Information);
+
+            if (result == DialogResult.Yes)
+            {
+                lblYtDlpStatus.Text = "도구 다운로드 중... (창을 끄지 마세요)";
+                try
+                {
+                    const string RAW_URL_BASE = "https://github.com/SugarRush1231/Multi_Media_Toolkit/raw/main/";
+                    using var client = new HttpClient();
+
+                    // 1. ffmpeg.exe
+                    if (!File.Exists(Path.Combine(baseDir, "ffmpeg.exe")))
+                    {
+                        lblYtDlpStatus.Text = "FFmpeg 다운로드 중... (1/3)";
+                        var res = await client.GetAsync(RAW_URL_BASE + "ffmpeg.exe");
+                        res.EnsureSuccessStatusCode();
+                        await using var fs = new FileStream(Path.Combine(baseDir, "ffmpeg.exe"), FileMode.Create);
+                        await res.Content.CopyToAsync(fs);
+                    }
+
+                    // 2. ffprobe.exe
+                    if (!File.Exists(Path.Combine(baseDir, "ffprobe.exe")))
+                    {
+                        lblYtDlpStatus.Text = "ffprobe 다운로드 중... (2/3)";
+                        var res = await client.GetAsync(RAW_URL_BASE + "ffprobe.exe");
+                        res.EnsureSuccessStatusCode();
+                        await using var fs = new FileStream(Path.Combine(baseDir, "ffprobe.exe"), FileMode.Create);
+                        await res.Content.CopyToAsync(fs);
+                    }
+
+                    // 3. yt-dlp.exe
+                    if (!File.Exists(Path.Combine(baseDir, "yt-dlp.exe")))
+                    {
+                        lblYtDlpStatus.Text = "yt-dlp 다운로드 중... (3/3)";
+                        var res = await client.GetAsync(RAW_URL_BASE + "yt-dlp.exe");
+                        res.EnsureSuccessStatusCode();
+                        await using var fs = new FileStream(Path.Combine(baseDir, "yt-dlp.exe"), FileMode.Create);
+                        await res.Content.CopyToAsync(fs);
+                    }
+
+                    // 다운로드 후 프로젝트 루트로도 복사 (사용자가 바로 확인할 수 있게)
+                    foreach (var tool in toolNames)
+                    {
+                        string baseToolPath = Path.Combine(baseDir, tool);
+                        string rootToolPath = Path.Combine(projectRoot, tool);
+                        if (File.Exists(baseToolPath) && !File.Exists(rootToolPath) && Directory.Exists(projectRoot))
+                        {
+                            try { File.Copy(baseToolPath, rootToolPath, true); } catch { }
+                        }
+                    }
+
+                    lblYtDlpStatus.Text = "모든 도구 준비 완료!";
+                    MessageBox.Show("모든 필수 도구가 성공적으로 설치되었습니다.\n이제 정상적으로 이용 가능합니다.", "설치 완료", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"다운로드 중 오류 발생: {ex.Message}", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    lblYtDlpStatus.Text = "도구 설치 실패";
+                }
+            }
+        }
+    }
+
+    private async Task EnsureYtDlpAsync()
+    {
+        string ytdlpPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "yt-dlp.exe");
+        try
+        {
+            using var client = new HttpClient();
+            // yt-dlp 공식 릴리즈 페이지에서 최신 exe 다운로드
+            var response = await client.GetAsync("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe");
+            response.EnsureSuccessStatusCode();
+            
+            await using var fs = new FileStream(ytdlpPath, FileMode.Create);
+            await response.Content.CopyToAsync(fs);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"yt-dlp 다운로드 실패: {ex.Message}");
+            throw;
+        }
     }
 
     private void BtnTab_Click(object sender, EventArgs e)
@@ -1118,7 +1243,7 @@ public partial class Form1 : Form
             var root = doc.RootElement;
 
             string latestVersion = root.GetProperty("tag_name").GetString().Replace("v", "");
-            string currentVersion = "1.0.3"; 
+            string currentVersion = "1.0.4"; 
 
             if (Version.TryParse(latestVersion, out var latest) && Version.TryParse(currentVersion, out var current))
             {
@@ -1427,7 +1552,12 @@ public partial class Form1 : Form
             
             lblYtDlpStatus.Text = "X 비공개 모드 활성 (로그인 필수)";
             
-            if (webViewX.CoreWebView2 != null) return; // 이미 초기화됨
+            if (webViewX.CoreWebView2 != null) 
+            {
+                webViewX.CoreWebView2.Stop(); // 이전 연결 찌꺼기 중단
+                webViewX.CoreWebView2.Navigate("https://x.com/login");
+                return;
+            }
 
             try
             {
@@ -1437,6 +1567,10 @@ public partial class Form1 : Form
 
                 var env = await CoreWebView2Environment.CreateAsync(null, webViewDataPath);
                 await webViewX.EnsureCoreWebView2Async(env);
+                
+                // [X 보안 우회] 일반 크롬 브라우저처럼 보이게 설정하여 차단 및 에러 방지
+                webViewX.CoreWebView2.Settings.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+                webViewX.CoreWebView2.Settings.AreDevToolsEnabled = false; // 자동화 도구 감지 회피
                 
                 webViewX.CoreWebView2.Navigate("https://x.com/login");
                 
@@ -1454,6 +1588,11 @@ public partial class Form1 : Form
         }
         else
         {
+            if (webViewX.CoreWebView2 != null)
+            {
+                webViewX.CoreWebView2.Stop(); // 꺼질 때 통신 즉시 중단
+            }
+
             // 비공개 모드 해제 시 UI 및 최소 크기 복원
             this.MinimumSize = new Size(800, 600);
             panelXBrowser.Visible = false;
