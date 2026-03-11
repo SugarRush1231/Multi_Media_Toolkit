@@ -43,7 +43,7 @@ public partial class Form1 : Form
     private CancellationTokenSource? _ytDlpCts;
     private int _lastWidth = 800;
     private int _lastHeight = 600;
-    private const string CURR_VERSION = "1.0.5";
+    private const string CURR_VERSION = "1.0.6";
 
     public Form1()
     {
@@ -1245,12 +1245,13 @@ public partial class Form1 : Form
             using var doc = JsonDocument.Parse(response);
             var root = doc.RootElement;
 
-            string latestVersion = root.GetProperty("tag_name").GetString().Replace("v", "");
-            string currentVersion = "1.0.4"; 
+            string latestVersion = root.GetProperty("tag_name").GetString()?.Replace("v", "").Trim() ?? "";
+            string currentVersion = CURR_VERSION.Trim(); 
 
             if (Version.TryParse(latestVersion, out var latest) && Version.TryParse(currentVersion, out var current))
             {
-                if (latest > current)
+                // 실질적인 숫자 비교 (1.05 == 1.05.0 으로 취급되도록 안전하게 비교)
+                if (latest.CompareTo(current) > 0)
                 {
                     var result = MessageBox.Show($"새로운 업데이트(v{latestVersion})가 존재합니다.\n지금 다운로드하여 설치하시겠습니까?", 
                         "업데이트 알림", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
