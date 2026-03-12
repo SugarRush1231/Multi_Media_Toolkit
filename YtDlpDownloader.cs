@@ -12,7 +12,7 @@ namespace YoutubeDownloader
         public event Action<double>? OnProgressChanged;
         public event Action<string>? OnDownloadCompleted;
 
-        public async Task<string> DownloadVideoAsync(string videoUrl, string saveDirectory, string browser = "none", System.Threading.CancellationToken token = default, string cookieFile = "")
+        public async Task<string> DownloadVideoAsync(string videoUrl, string saveDirectory, string browser = "none", System.Threading.CancellationToken token = default, string cookieFile = "", Dictionary<string, string> headers = null)
         {
             // 1. URL 정화
             videoUrl = videoUrl.Trim().Trim('\"', '\'', ' ');
@@ -89,6 +89,18 @@ namespace YoutubeDownloader
             else if (!string.IsNullOrEmpty(browser) && browser != "none")
             {
                 arguments += $"--cookies-from-browser {browser.ToLower()} ";
+            }
+
+            // 추가 헤더 설정 (Twitter 비공개 계정 등 우회용)
+            if (headers != null)
+            {
+                foreach (var header in headers)
+                {
+                    if (!string.IsNullOrEmpty(header.Value))
+                    {
+                        arguments += $"--add-header \"{header.Key}:{header.Value}\" ";
+                    }
+                }
             }
             
             arguments += $"--ffmpeg-location \"{ffmpegDir}\" --merge-output-format mp4 -o \"{outputTemplate}\" \"{videoUrl}\"";

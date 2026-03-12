@@ -17,6 +17,7 @@ using Microsoft.Web.WebView2.Core;
 using System.Net.Http;
 using System.Text.Json;
 
+ 
 namespace YoutubeDownloader;
 
 public partial class Form1 : Form
@@ -43,7 +44,19 @@ public partial class Form1 : Form
     private CancellationTokenSource? _ytDlpCts;
     private int _lastWidth = 800;
     private int _lastHeight = 600;
-    private const string CURR_VERSION = "1.0.7";
+    private const string CURR_VERSION = "1.1.0";
+
+    // [Twitter/X Private Extraction] Captured Data
+    private string _capturedM3u8Url = "";
+    private string _capturedAuthToken = "";
+    private string _capturedCsrfToken = "";
+    private string _capturedUserAgent = "";
+
+    // X Private Mode UI Controls
+    private Panel? panelXTopBar;
+    private Panel? panelXBottomBar;
+    private TableLayoutPanel? tableLayoutX;
+    private Label? lblXGuide;
 
     public Form1()
     {
@@ -72,7 +85,11 @@ public partial class Form1 : Form
         lblYtDlpSavePath.Text = "현재 저장 위치: " + initialPath;
         txtDownloadFolder.Text = SettingsManager.Settings?.DefaultDownloadFolder ?? "";
 
-        // Enable DoubleBuffering
+        // [반응형 UI] 설정 버튼 및 탭 버튼들의 위치를 창 크기에 맞게 조정
+        btnTabSettings.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+        btnTabMiniEdit.Anchor = AnchorStyles.Top | AnchorStyles.Left; // 미니편집기까진 순서대로 내려가도록
+
+        // Enable DoubleBuffering for ListView to prevent flickering
         typeof(Control).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
             ?.SetValue(lvQueue, true, null);
 
@@ -262,12 +279,19 @@ public partial class Form1 : Form
         var btn = sender as RoundButton;
         if (btn == null) return;
 
+        // [Mini Editor] 탭을 벗어날 때 재생 중이면 일시정지 로직 추가
+        if (tabControlMain.SelectedTab == tabMiniEdit && btn != btnTabMiniEdit)
+        {
+            miniEditorControl.PauseVideo();
+        }
+
         // [UI 직관성] 사이드바 탭을 클릭하면 켜져있는 비공개 모드를 자동으로 해제
         if (tglXPrivateMode.Checked)
         {
             tglXPrivateMode.Checked = false;
         }
 
+        panelMain.SuspendLayout();
         UpdateTabStyles(btn);
         
         if (btn == btnTabYoutube) tabControlMain.SelectedTab = tabYoutube;
@@ -277,6 +301,8 @@ public partial class Form1 : Form
         else if (btn == btnTabAudio) tabControlMain.SelectedTab = tabAudio;
         else if (btn == btnTabMiniEdit) tabControlMain.SelectedTab = tabMiniEdit;
         else if (btn == btnTabSettings) tabControlMain.SelectedTab = tabSettings;
+        
+        panelMain.ResumeLayout(true);
     }
 
     private void UpdateTabStyles(RoundButton activeBtn)
@@ -372,18 +398,21 @@ public partial class Form1 : Form
 
             if (cmbQuality.Items.Count > 0)
             {
+                cmbQuality.Enabled = true;
                 cmbQuality.SelectedIndex = 0;
                 // Force drop-down height recalculation to avoid 2-row glitch
                 cmbQuality.DropDownHeight = 300; 
             }
             else
             {
+                cmbQuality.Enabled = false;
                 lblVideoTitle.Text = "지원하는 스트림을 찾지 못했습니다.";
             }
             cmbQuality.EndUpdate();
         }
         catch (Exception ex)
         {
+            cmbQuality.Enabled = false;
             MessageBox.Show($"오류: {ex.Message}", "에러", MessageBoxButtons.OK, MessageBoxIcon.Error);
             lblVideoTitle.Text = "오류가 발생했습니다.";
         }
@@ -464,6 +493,7 @@ public partial class Form1 : Form
         lblVideoTitle.Text = "URL을 입력하고 '영상 확인' 버튼을 눌러주세요.";
         picThumbnail.Image = null;
         cmbQuality.Items.Clear();
+        cmbQuality.Enabled = false;
         _currentVideo = null!;
         _streamManifest = null!;
         _customTitle = "";
@@ -505,6 +535,18 @@ public partial class Form1 : Form
             
             _ytDlpCts = new CancellationTokenSource();
             
+            // [Human-like Delay] 트위터 봇 감지 우회
+            if (tglXPrivateMode.Checked)
+            {
+                Random rnd = new Random();
+                int delay = rnd.Next(1500, 4200);
+                string waitMsg = $"차단 방지를 위해 대기 중... ({delay/1000.0:F1}초)";
+                lblXStatus.Text = waitMsg;
+                lblYtDlpStatus.Text = waitMsg;
+                await Task.Delay(delay, _ytDlpCts.Token);
+            }
+
+            _lastYtDlpPct = -1; // Reset progress tracking for new download
             await EnsureYtDlpAsync(_ytDlpCts.Token);
 
             lblYtDlpStatus.Text = "다운로드 준비 중...";
@@ -525,12 +567,13 @@ public partial class Form1 : Form
             // [치지직 정책] video(VOD) 및 clips 허용
             if (url.Contains("chzzk.naver.com") && !url.Contains("/video/") && !url.Contains("/clips/"))
             {
-                MessageBox.Show("치지직은 'video' 또는 'clips' 주소만 다운로드할 수 있습니다.\n(라이브는 지원하지 않습니다.)", "알림", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("치지직은 video 또는 clips 주소만 다운로드할 수 있습니다.\n\n(라이브는 다운시작전 5초 영상이 다운됩니다.)", "알림", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             string browser = "none";
             string cookieFile = "";
+            Dictionary<string, string> customHeaders = null;
             
             if (tglXPrivateMode.Checked)
             {
@@ -542,8 +585,16 @@ public partial class Form1 : Form
                     if (string.IsNullOrEmpty(cookieFile))
                     {
                         MessageBox.Show("브라우저에서 로그인 정보를 찾을 수 없습니다.\n먼저 비공개 모드 브라우저에서 로그인을 완료해 주세요.", "알림", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        return; // 정지하거나 경고 후 진행
+                        return;
                     }
+
+                    // [Header Impersonation] 브라우저와 동일한 헤더 준비
+                    customHeaders = new Dictionary<string, string>();
+                    if (!string.IsNullOrEmpty(_capturedAuthToken)) customHeaders["authorization"] = _capturedAuthToken;
+                    if (!string.IsNullOrEmpty(_capturedCsrfToken)) customHeaders["x-csrf-token"] = _capturedCsrfToken;
+                    if (!string.IsNullOrEmpty(_capturedUserAgent)) customHeaders["User-Agent"] = _capturedUserAgent;
+                    
+                    // x-csrf-token은 보통 ct0 쿠키와 일치해야 트위터가 신뢰함
                 }
                 catch (Exception ex)
                 {
@@ -551,7 +602,7 @@ public partial class Form1 : Form
                 }
             }
             
-            string finalFilePath = await downloader.DownloadVideoAsync(url, savePath, browser, _ytDlpCts.Token, cookieFile);
+            string finalFilePath = await downloader.DownloadVideoAsync(url, savePath, browser, _ytDlpCts.Token, cookieFile, customHeaders);
 
             Notify("다운로드 완료", "영상 다운로드가 완료되었습니다.");
             MessageBox.Show($"다운로드 완료!\n저장 위치: {finalFilePath}", "성공", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -606,9 +657,13 @@ public partial class Form1 : Form
         }
     }
 
+    private int _lastYtDlpPct = -1;
     private void MirrorProgress(int pct, string msg)
     {
         if (this.IsDisposed || this.Disposing) return;
+        if (pct == _lastYtDlpPct) return;
+        _lastYtDlpPct = pct;
+
         this.Invoke((MethodInvoker)delegate {
             pbYtDlp.Value = pct;
             lblYtDlpStatus.Text = msg;
@@ -660,12 +715,16 @@ public partial class Form1 : Form
                 job.ListViewItem.SubItems[2].Text = "준비 중...";
                 lblStatus.Text = $"진행 중: {job.Video.Title}";
 
+                int lastPct = -1;
                 var progress = new Progress<double>(p =>
                 {
                     if (!lvQueue.Items.Contains(job.ListViewItem))
                         job.JobCts.Cancel();
 
                     int pct = (int)(p * 100);
+                    if (pct == lastPct) return; // Only update on actual change
+                    lastPct = pct;
+
                     if (!this.IsDisposed && !this.Disposing)
                     {
                         try {
@@ -1214,18 +1273,6 @@ public partial class Form1 : Form
         MessageBox.Show("설정이 안전하게 저장되었습니다.", "저장 완료", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
-    private void BtnFullCleanup_Click(object sender, EventArgs e)
-    {
-        try
-        {
-            CleanupManager.FullSystemCleanup();
-            MessageBox.Show("임시 파일 및 메모리 정리가 완료되었습니다.", "정리 완료");
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"정리 중 오류 발생: {ex.Message}", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-    }
 
     private async void BtnCheckUpdate_Click(object sender, EventArgs e)
     {
@@ -1619,45 +1666,75 @@ public partial class Form1 : Form
             
             if (webViewX.CoreWebView2 != null)
             {
-                webViewX.CoreWebView2.Settings.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+                _capturedUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+                webViewX.CoreWebView2.Settings.UserAgent = _capturedUserAgent;
                 webViewX.CoreWebView2.Settings.AreDevToolsEnabled = false;
+
+                webViewX.CoreWebView2.NavigationStarting += (s, e) => {
+                    _capturedM3u8Url = "";
+                    Debug.WriteLine("[X-Browser] Navigation Starting, clearing captured URL.");
+                };
+
+                await webViewX.CoreWebView2.CallDevToolsProtocolMethodAsync("Network.enable", "{}");
+                
+                webViewX.CoreWebView2.GetDevToolsProtocolEventReceiver("Network.requestWillBeSent").DevToolsProtocolEventReceived += (sender, args) =>
+                {
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(args.ParameterObjectAsJson);
+                        var root = doc.RootElement;
+                        if (root.TryGetProperty("request", out var request))
+                        {
+                            string url = request.GetProperty("url").GetString() ?? "";
+                            if (url.Contains(".m3u8") || url.Contains("video.twimg.com"))
+                            {
+                                _capturedM3u8Url = url;
+                                Debug.WriteLine($"[X-Intercept] Video Found: {url}");
+                            }
+                            if (request.TryGetProperty("headers", out var headers))
+                            {
+                                if (headers.TryGetProperty("authorization", out var auth)) _capturedAuthToken = auth.GetString() ?? _capturedAuthToken;
+                                if (headers.TryGetProperty("x-csrf-token", out var csrf)) _capturedCsrfToken = csrf.GetString() ?? _capturedCsrfToken;
+                            }
+                        }
+                    }
+                    catch { }
+                };
             }
         }
-        catch { /* 비공개 모드 진입 시 다시 시도하므로 여기서는 무시 */ }
+        catch { }
     }
 
     private async void TglXPrivateMode_CheckedChanged(object sender, EventArgs e)
     {
         if (tglXPrivateMode.Checked)
         {
-            // 현재 크기 저장
             _lastWidth = this.Width;
             _lastHeight = this.Height;
 
-            this.MinimumSize = new Size(1100, 750);
-            if (this.Width < 1100) this.Width = 1100;
-            if (this.Height < 750) this.Height = 750;
+            SetupXPrivateUI();
+            this.WindowState = FormWindowState.Maximized;
 
             panelXBrowser.Parent = this; 
             panelXBrowser.BringToFront();
             panelXBrowser.Visible = true;
             panelXBrowser.Dock = DockStyle.Fill;
-            webViewX.Dock = DockStyle.Fill;
             
-            // 이미 초기화되어 있다면 바로 이동 (초고속)
+            // 테이블 레이아웃 보이기
+            if (tableLayoutX != null) tableLayoutX.Visible = true;
+            
             if (webViewX.CoreWebView2 != null) 
             {
                 webViewX.CoreWebView2.Stop();
                 webViewX.CoreWebView2.Navigate("https://x.com/login");
-                return;
             }
-
-            // 만약 예열이 안 됐을 경우에만 여기서 초기화
-            await PreInitializeWebView2Async();
-            
-            if (webViewX.CoreWebView2 != null)
+            else
             {
-                webViewX.CoreWebView2.Navigate("https://x.com/login");
+                await PreInitializeWebView2Async();
+                if (webViewX.CoreWebView2 != null)
+                {
+                    webViewX.CoreWebView2.Navigate("https://x.com/login");
+                }
             }
             
             this.PerformLayout();
@@ -1665,20 +1742,14 @@ public partial class Form1 : Form
         }
         else
         {
-            if (webViewX.CoreWebView2 != null)
-            {
-                webViewX.CoreWebView2.Stop(); // 꺼질 때 통신 즉시 중단
-            }
+            if (webViewX.CoreWebView2 != null) webViewX.CoreWebView2.Stop();
 
-            // 비공개 모드 해제 시 UI 및 최소 크기 복원
+            this.WindowState = FormWindowState.Normal;
             this.MinimumSize = new Size(800, 600);
             panelXBrowser.Visible = false;
-            panelXBrowser.Parent = tabYtDlp; // 부모를 다시 탭 내부로 복원
+            panelXBrowser.Parent = tabYtDlp; 
             panelXBrowser.Dock = DockStyle.Fill;
-            webViewX.Dock = DockStyle.None; // 원래 스타일로 복구
-            webViewX.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
             
-            // 크기 원복
             if (_lastWidth > 0 && _lastHeight > 0)
             {
                 this.Width = _lastWidth;
@@ -1689,6 +1760,105 @@ public partial class Form1 : Form
             this.PerformLayout();
             this.Refresh();
         }
+    }
+
+    private void SetupXPrivateUI()
+    {
+        if (tableLayoutX == null)
+        {
+            panelXBrowser.Padding = new Padding(0);
+            panelXBrowser.Size = tabYtDlp.Size; // 부모 크기에 강제 동기화 (버튼 위치 계산용)
+
+            // [Grid 레이아웃 생성] 절대 겹치지 않는 3단 분할
+            tableLayoutX = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                RowCount = 3,
+                ColumnCount = 1,
+                BackColor = Color.FromArgb(30, 30, 30) // 배경
+            };
+            panelXBrowser.Controls.Add(tableLayoutX);
+
+            // 행 정의 (상단 60, 하단 30, 나머지는 웹뷰)
+            tableLayoutX.RowStyles.Add(new RowStyle(SizeType.Absolute, 60F));
+            tableLayoutX.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            tableLayoutX.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+
+            // 1. 상단 바
+            panelXTopBar = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(40, 40, 40),
+                Padding = new Padding(15, 10, 15, 10)
+            };
+            tableLayoutX.Controls.Add(panelXTopBar, 0, 0);
+
+            lblXGuide = new Label
+            {
+                Text = "게시물을 누른 후 다운로드 해주세요",
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 11F, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleCenter,
+                AutoSize = false,
+                Dock = DockStyle.Fill,
+                BackColor = Color.Transparent
+            };
+            panelXTopBar.Controls.Add(lblXGuide);
+            lblXGuide.SendToBack();
+
+            // 2. 하단 바
+            panelXBottomBar = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(40, 40, 40),
+                Padding = new Padding(20, 5, 20, 5)
+            };
+            tableLayoutX.Controls.Add(panelXBottomBar, 0, 2);
+
+            // 3. 버튼들 배치 - 위치 및 정렬 최적화 (가운데 글자와 겹치지 않게)
+            btnXCapture.Visible = false;
+
+            btnXDownload.Parent = panelXTopBar;
+            btnXDownload.Dock = DockStyle.None;
+            btnXDownload.Size = new Size(150, 36);
+            btnXDownload.Location = new Point(15, 12);
+            btnXDownload.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+            btnXDownload.BorderRadius = 18;
+            btnXDownload.Text = "즉시 다운로드 📥";
+            btnXDownload.BackColor = Color.FromArgb(2, 132, 199);
+            btnXDownload.ForeColor = Color.White;
+            btnXDownload.Font = new Font("Segoe UI", 9.5F, FontStyle.Bold);
+            btnXDownload.BringToFront();
+            
+            btnXClose.Parent = panelXTopBar;
+            btnXClose.Dock = DockStyle.None;
+            btnXClose.Size = new Size(80, 36);
+            // 현재 패널 너비를 기준으로 오른쪽 여백 15px 계산
+            int closeX = panelXTopBar.Width > 100 ? panelXTopBar.Width - 95 : 515;
+            btnXClose.Location = new Point(closeX, 12); 
+            btnXClose.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            btnXClose.BorderRadius = 18;
+            btnXClose.Text = "닫기 ✕";
+            btnXClose.BackColor = Color.FromArgb(241, 245, 249); 
+            btnXClose.ForeColor = Color.FromArgb(71, 85, 105);
+            btnXClose.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+            btnXClose.BringToFront();
+
+            // 4. 프로그레스 바 최적화
+            pbXDownload.Parent = panelXBottomBar;
+            pbXDownload.Dock = DockStyle.Fill;
+            lblXStatus.Visible = false;
+            pbXDownload.BringToFront();
+
+            // 5. 웹뷰 배치 (중앙 행에 고립시켜 겹침 방지)
+            webViewX.Parent = tableLayoutX;
+            tableLayoutX.Controls.Add(webViewX, 0, 1);
+            webViewX.Dock = DockStyle.Fill;
+            
+        }
+
+        tableLayoutX.BringToFront();
+        panelXBrowser.PerformLayout();
     }
 
     private void BtnXCapture_Click(object sender, EventArgs e)
@@ -1702,9 +1872,16 @@ public partial class Form1 : Form
         if (isTweetPage)
         {
             txtYtDlpUrl.Text = currentUrl;
-            lblYtDlpStatus.Text = "영상 주소 인식 완료: " + currentUrl;
-            // 이제 바로 닫지 않고 사용자에게 선택권을 줌
-            MessageBox.Show("영상을 포착했습니다! 이제 '바로 다운' 버튼을 눌러 다운 받아주세요.", "알림");
+            string statusMsg = "트윗 주소 인식 완료";
+            
+            if (!string.IsNullOrEmpty(_capturedM3u8Url))
+            {
+                statusMsg = "영상 스트림 포착 성공 (HLS)";
+                txtYtDlpUrl.Text = _capturedM3u8Url; // 원본 트윗 대신 m3u8 주소를 기본으로 설정
+            }
+
+            lblYtDlpStatus.Text = statusMsg + ": " + currentUrl;
+            MessageBox.Show($"{statusMsg}!\n\n이제 '바로 다운' 버튼을 눌러주세요.\n(비공개 계정이라도 브라우저에서 재생이 가능하다면 다운로드 됩니다.)", "포착 성공");
         }
         else
         {
