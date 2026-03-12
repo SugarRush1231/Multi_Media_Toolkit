@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Diagnostics;
@@ -25,10 +26,15 @@ namespace YoutubeDownloader
         private double _fps = 30.0;
         private int _videoWidth = 16, _videoHeight = 9; // Default 16:9
         private bool _shouldPauseOnLoad = false;
+        private bool _isPlaying = false; // Local flag to avoid blocking getter
+        private bool _isProcessing = false; // Prevent concurrent commands
+        private long _lastSeekTime = 0; // Throttle arrow keys
+        private Stopwatch _interpolationTimer = new Stopwatch();
+        private long _lastSyncMs = 0;
 
         private RoundButton btnBrowse;
         private TextBox txtFile;
-        private Label lblCurrentTime, lblIn, lblOut, lblDuration;
+        private Label lblCurrentTime, lblIn, lblOut, lblDuration, lblVideoInfo;
         private RoundButton btnSetIn, btnSetOut, btnClearAll;
         private RoundButton btnPrevFrame, btnNextFrame, btnPrevSec, btnNextSec;
         private RoundButton btnPlayPause, btnStop;
@@ -89,56 +95,103 @@ namespace YoutubeDownloader
                 });
 
                 _mediaPlayer.LengthChanged += (s, e) => {
-                    _durationMs = _mediaPlayer.Length;
-                    InvokeIfRequired(() => {
+                    _durationMs = e.Length;
+                    this.BeginInvoke(new Action(() => {
                         if (_durationMs > 0 && _durationMs <= int.MaxValue)
                             tbTimeline.Maximum = (int)_durationMs;
                         
-                        // Try to get actual FPS
-                        if (_mediaPlayer != null && _mediaPlayer.Fps > 1)
-                            _fps = _mediaPlayer.Fps;
-                        
-                        // Try to get actual Video size to adjust aspect ratio
-                        var track = _mediaPlayer.Media?.Tracks.FirstOrDefault(t => t.TrackType == TrackType.Video);
-                        if (track.HasValue)
-                        {
-                            var videoTrack = track.Value.Data.Video;
-                            if (videoTrack.Width > 0 && videoTrack.Height > 0)
+                        // Try to get actual video metadata (FPS, Size)
+                        try { 
+                            if (_mediaPlayer != null && _mediaPlayer.Fps > 1) 
+                                _fps = _mediaPlayer.Fps;
+
+                            var tracks = _mediaPlayer.Media?.Tracks;
+                            if (tracks != null)
                             {
-                                _videoWidth = (int)videoTrack.Width;
-                                _videoHeight = (int)videoTrack.Height;
-                                CenterControls(); 
+                                foreach (var track in tracks)
+                                {
+                                    if (track.TrackType == TrackType.Video)
+                                    {
+                                        var v = track.Data.Video;
+                                        if (v.Width > 0 && v.Height > 0)
+                                        {
+                                            _videoWidth = (int)v.Width;
+                                            _videoHeight = (int)v.Height;
+                                        }
+                                        if (v.FrameRateNum > 0)
+                                        {
+                                            _fps = (double)v.FrameRateNum / Math.Max(1, v.FrameRateDen);
+                                        }
+                                        break;
+                                    }
+                                }
                             }
-                        }
+                            CenterControls();
+                        } catch {}
                             
                         UpdateTimeLabels();
-                    });
+                    }));
                 };
 
                 // Smoother time tracking
                 _mediaPlayer.TimeChanged += (s, e) => {
+                    _lastSyncMs = e.Time;
                     _currentMs = e.Time;
-                    // Background sync, UI is mostly handled by 60fps timer for smoothness
+                    _interpolationTimer.Restart();
                 };
 
                 // Handle pause on load
                 _mediaPlayer.Playing += (s, e) => {
+                    _isPlaying = true;
                     if (_shouldPauseOnLoad)
                     {
                         _shouldPauseOnLoad = false;
                         Task.Run(() => {
                             Task.Delay(50).ContinueWith(_ => _mediaPlayer.Pause());
                         });
-                        InvokeIfRequired(() => _timer.Stop());
+                        InvokeIfRequired(() => {
+                            _interpolationTimer.Stop();
+                            _timer.Stop();
+                        });
                     }
                     else
                     {
-                        InvokeIfRequired(() => _timer.Start());
+                        InvokeIfRequired(() => {
+                            _interpolationTimer.Start();
+                            _timer.Start();
+                        });
                     }
                 };
 
                 _mediaPlayer.Paused += (s, e) => {
-                    InvokeIfRequired(() => _timer.Stop());
+                    _isPlaying = false;
+                    this.BeginInvoke(new Action(() => {
+                        _interpolationTimer.Stop();
+                        _timer.Stop();
+                    }));
+                };
+
+                _mediaPlayer.EndReached += (s, e) => {
+                    _isPlaying = false;
+                    // Reset UI from background thread without blocking
+                    this.BeginInvoke(new Action(() => {
+                        _interpolationTimer.Stop();
+                        _timer.Stop();
+                        _currentMs = 0;
+                        _lastSyncMs = 0;
+                        if (tbTimeline.Maximum > 0) tbTimeline.Value = 0;
+                        UpdateTimeLabels();
+                        lblStatus.Text = "영상 재생 완료";
+                    }));
+                };
+
+                _mediaPlayer.EncounteredError += (s, e) => {
+                    _isPlaying = false;
+                    this.BeginInvoke(new Action(() => {
+                        _timer.Stop();
+                        lblStatus.Text = "재생 오류 발생";
+                        MessageBox.Show("영상을 재생하는 중 오류가 발생했습니다.");
+                    }));
                 };
             }
         }
@@ -151,10 +204,12 @@ namespace YoutubeDownloader
 
         private void Timer_Tick(object sender, EventArgs e)
         {
-            if (_mediaPlayer != null && _mediaPlayer.IsPlaying)
+            if (_mediaPlayer != null && _isPlaying)
             {
-                _currentMs = _mediaPlayer.Time;
-                
+                // High-precision interpolation
+                long interpolatedMs = _lastSyncMs + _interpolationTimer.ElapsedMilliseconds;
+                _currentMs = interpolatedMs;
+
                 InvokeIfRequired(() => {
                     string currentTime = FormatTime(_currentMs);
                     if (lblTimecode.Text != currentTime) lblTimecode.Text = currentTime;
@@ -171,8 +226,11 @@ namespace YoutubeDownloader
                 {
                     if (_currentMs >= _outMs || _currentMs < _inMs - 100)
                     {
-                        _mediaPlayer.Time = _inMs;
-                        _currentMs = _inMs;
+                        long target = _inMs;
+                        Task.Run(() => _mediaPlayer.Time = target);
+                        _lastSyncMs = target;
+                        _currentMs = target;
+                        _interpolationTimer.Restart();
                     }
                 }
             }
@@ -184,6 +242,7 @@ namespace YoutubeDownloader
             lblTimecode.Text = currentTime;
             lblCurrentTime.Text = $"Playhead: {currentTime}";
             lblDuration.Text = $"Duration: {FormatTime(_durationMs)}";
+            lblVideoInfo.Text = $"Video: {_videoWidth}x{_videoHeight} | {_fps:F2} FPS";
             lblIn.Text = $"[ IN ]:  {FormatTime(_inMs)}";
             lblOut.Text = $"[ OUT ]: {FormatTime(_outMs)}";
             UpdateMarkerPositions();
@@ -244,7 +303,7 @@ namespace YoutubeDownloader
         {
             if (ms < 0) return "--:--:--:--";
             
-            double fps = (_mediaPlayer != null && _mediaPlayer.Fps > 1) ? _mediaPlayer.Fps : _fps;
+            double fps = _fps;
             if (fps <= 0) fps = 30.0;
 
             TimeSpan ts = TimeSpan.FromMilliseconds(ms);
@@ -263,40 +322,47 @@ namespace YoutubeDownloader
         {
             if (_mediaPlayer != null && _mediaPlayer.Media != null)
             {
+                // msg.LParam: bit 30 is 1 if the key was already down before the message (repeat)
+                bool isRepeat = (msg.LParam.ToInt64() & 0x40000000) != 0;
+
                 // Only handle on KeyDown (prevent multiples from other messages)
                 if (msg.Msg != 0x100 && msg.Msg != 0x104) 
                     return base.ProcessCmdKey(ref msg, keyData);
 
-                double currentFps = (_mediaPlayer.Fps > 1) ? _mediaPlayer.Fps : _fps;
-                int frameMs = (int)Math.Max(1, 1000.0 / currentFps);
-
                 switch (keyData)
                 {
                     case Keys.Space:
-                        TogglePlayPause();
+                        if (!isRepeat) TogglePlayPause();
                         return true;
                     case Keys.I:
-                        SetIn();
+                        if (!isRepeat) SetIn();
                         return true;
                     case Keys.O:
-                        SetOut();
+                        if (!isRepeat) SetOut();
                         return true;
                     case Keys.Left:
-                        if (txtSeek.Focused) return base.ProcessCmdKey(ref msg, keyData);
-                        SeekDelta(-frameMs);
-                        return true;
                     case Keys.Right:
-                        if (txtSeek.Focused) return base.ProcessCmdKey(ref msg, keyData);
-                        SeekDelta(frameMs);
-                        return true;
                     case Keys.Shift | Keys.Left:
-                        SeekDelta(-5 * frameMs);
-                        return true;
                     case Keys.Shift | Keys.Right:
-                        SeekDelta(5 * frameMs);
+                        if (txtSeek.Focused) return base.ProcessCmdKey(ref msg, keyData);
+                        
+                        // Calculate frameMs only when needed to avoid blocking on _mediaPlayer.Fps
+                        double currentFps = _fps;
+                        int fMs = (int)Math.Max(1, 1000.0 / currentFps);
+
+                        // Throttle rapid seeking (max 20 requests per second)
+                        long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+                        if (now - _lastSeekTime < 50) return true;
+                        _lastSeekTime = now;
+
+                        if (keyData == Keys.Left) SeekDelta(-fMs);
+                        else if (keyData == Keys.Right) SeekDelta(fMs);
+                        else if (keyData == (Keys.Shift | Keys.Left)) SeekDelta(-5 * fMs);
+                        else if (keyData == (Keys.Shift | Keys.Right)) SeekDelta(5 * fMs);
                         return true;
+
                     case Keys.Enter:
-                        ToggleFullScreen();
+                        if (!isRepeat) ToggleFullScreen();
                         return true;
                 }
             }
@@ -336,6 +402,18 @@ namespace YoutubeDownloader
                     {
                         ToggleFullScreen();
                     }
+                    else if (e.KeyCode == Keys.Space)
+                    {
+                        TogglePlayPause();
+                    }
+                    else if (e.KeyCode == Keys.Left || e.KeyCode == Keys.Right)
+                    {
+                        double fps = _fps;
+                        int fMs = (int)Math.Max(1, 1000.0 / fps);
+                        int delta = (e.Shift ? 5 : 1) * fMs;
+                        if (e.KeyCode == Keys.Left) SeekDelta(-delta);
+                        else SeekDelta(delta);
+                    }
                 };
 
                 _videoView.Parent = _fullScreenForm;
@@ -363,9 +441,9 @@ namespace YoutubeDownloader
 
         public void PauseVideo()
         {
-            if (_mediaPlayer != null && _mediaPlayer.IsPlaying)
+            if (_mediaPlayer != null && _isPlaying)
             {
-                _mediaPlayer.Pause();
+                Task.Run(() => _mediaPlayer.Pause());
                 _timer.Stop();
                 InvokeIfRequired(() => UpdateTimeLabels());
             }
@@ -373,43 +451,72 @@ namespace YoutubeDownloader
 
         private void TogglePlayPause()
         {
-            if (_mediaPlayer == null || _mediaPlayer.Media == null) return;
-            if (_mediaPlayer.IsPlaying)
-            {
-                _mediaPlayer.Pause();
-                _timer.Stop();
-                _currentMs = _mediaPlayer.Time;
-                UpdateTimeLabels();
-            }
-            else
-            {
-                _mediaPlayer.Play();
-                _timer.Start();
-            }
+            if (_mediaPlayer == null || _mediaPlayer.Media == null || _isProcessing) return;
+
+            _isProcessing = true;
+            Task.Run(() => {
+                try {
+                    var state = _mediaPlayer.State;
+                    if (state == VLCState.Ended || state == VLCState.Stopped)
+                    {
+                        _mediaPlayer.Stop(); 
+                        _mediaPlayer.Play();
+                        _isPlaying = true;
+                        this.BeginInvoke(new Action(() => _timer.Start()));
+                    }
+                    else if (_isPlaying)
+                    {
+                        _mediaPlayer.Pause();
+                        _isPlaying = false;
+                        this.BeginInvoke(new Action(() => {
+                            _timer.Stop();
+                            UpdateTimeLabels();
+                        }));
+                    }
+                    else
+                    {
+                        _mediaPlayer.Play();
+                        _isPlaying = true;
+                        this.BeginInvoke(new Action(() => _timer.Start()));
+                    }
+                } finally {
+                    _isProcessing = false;
+                }
+            });
         }
 
         private void SeekDelta(long deltaMs)
         {
-            if (_mediaPlayer == null || _mediaPlayer.Media == null) return;
+            if (_mediaPlayer == null || _mediaPlayer.Media == null || _isProcessing) return;
             
-            // If it's a small jump (frame-by-frame), pause first to ensure visual update
-            if (Math.Abs(deltaMs) < 1000 && _mediaPlayer.IsPlaying)
-            {
-                _mediaPlayer.Pause();
-                _timer.Stop();
-            }
+            _isProcessing = true;
+            Task.Run(() => {
+                try {
+                    // If it's a small jump (frame-by-frame), pause first to ensure visual update
+                    if (Math.Abs(deltaMs) < 1000 && _isPlaying)
+                    {
+                        _mediaPlayer.Pause();
+                        _isPlaying = false;
+                        this.BeginInvoke(new Action(() => _timer.Stop()));
+                    }
 
-            long newTime = _mediaPlayer.Time + deltaMs;
-            if (newTime < 0) newTime = 0;
-            if (newTime > _mediaPlayer.Length) newTime = _mediaPlayer.Length;
+                    long newTime = _currentMs + deltaMs;
+                    if (newTime < 0) newTime = 0;
+                    if (newTime > _durationMs) newTime = _durationMs;
 
-            _mediaPlayer.Time = newTime;
-            _currentMs = newTime;
-            
-            // Visual feedback
-            InvokeIfRequired(() => {
-                tbTimeline.Value = (int)Math.Min(tbTimeline.Maximum, Math.Max(0, _currentMs));
-                UpdateTimeLabels();
+                    _currentMs = newTime;
+                    _lastSyncMs = newTime;
+                    _interpolationTimer.Restart();
+                    _mediaPlayer.Time = newTime;
+                    
+                    this.BeginInvoke(new Action(() => {
+                        if (newTime >= tbTimeline.Minimum && newTime <= tbTimeline.Maximum)
+                            tbTimeline.Value = (int)newTime;
+                        UpdateTimeLabels();
+                    }));
+                } finally {
+                    _isProcessing = false;
+                }
             });
         }
 
@@ -440,14 +547,18 @@ namespace YoutubeDownloader
             {
                 if (newMs < 0) newMs = 0;
                 if (newMs > _durationMs) newMs = _durationMs;
-                _mediaPlayer.Time = newMs;
                 _currentMs = newMs;
+                _lastSyncMs = newMs;
+                _interpolationTimer.Restart();
+                _mediaPlayer.Time = newMs;
+
                 if (newMs >= tbTimeline.Minimum && newMs <= tbTimeline.Maximum)
                     tbTimeline.Value = (int)newMs;
                 
-                if (_mediaPlayer.IsPlaying)
+                if (_isPlaying)
                 {
-                    _mediaPlayer.Pause();
+                    Task.Run(() => _mediaPlayer.Pause());
+                    _isPlaying = false;
                     _timer.Stop();
                 }
 
@@ -458,7 +569,7 @@ namespace YoutubeDownloader
         private void SetIn()
         {
             if (_mediaPlayer == null || _mediaPlayer.Media == null) return;
-            _inMs = _mediaPlayer.Time;
+            _inMs = _currentMs;
             if (_outMs != -1 && _inMs > _outMs) _outMs = -1;
             UpdateTimeLabels();
         }
@@ -466,7 +577,7 @@ namespace YoutubeDownloader
         private void SetOut()
         {
             if (_mediaPlayer == null || _mediaPlayer.Media == null) return;
-            _outMs = _mediaPlayer.Time;
+            _outMs = _currentMs;
             if (_inMs != -1 && _outMs < _inMs) _inMs = -1;
             UpdateTimeLabels();
         }
@@ -499,7 +610,7 @@ namespace YoutubeDownloader
             
             tbTimeline.MouseDown += (s, e) => { 
                 _isDraggingTrackBar = true; 
-                if (_mediaPlayer?.IsPlaying == true) { _mediaPlayer.Pause(); _timer.Stop(); }
+                if (_isPlaying) { Task.Run(() => _mediaPlayer.Pause()); _isPlaying = false; _timer.Stop(); }
                 
                 // Click-to-Seek logic
                 if (tbTimeline.Width > 0) {
@@ -508,7 +619,7 @@ namespace YoutubeDownloader
                     if (newValue >= tbTimeline.Minimum && newValue <= tbTimeline.Maximum) {
                         tbTimeline.Value = newValue;
                         if (_mediaPlayer?.Media != null) {
-                            _mediaPlayer.Time = newValue;
+                            Task.Run(() => _mediaPlayer.Time = newValue);
                             _currentMs = newValue;
                             UpdateTimeLabels();
                         }
@@ -519,16 +630,18 @@ namespace YoutubeDownloader
             tbTimeline.MouseUp += (s, e) => { 
                 _isDraggingTrackBar = false; 
                 if (_mediaPlayer?.Media != null) { 
-                    _mediaPlayer.Time = tbTimeline.Value; 
-                    _currentMs = tbTimeline.Value; 
+                    int target = tbTimeline.Value;
+                    Task.Run(() => _mediaPlayer.Time = target); 
+                    _currentMs = target; 
                     UpdateTimeLabels(); 
                 } 
             };
             
             tbTimeline.Scroll += (s, e) => { 
                 if (_mediaPlayer?.Media != null) { 
-                    _currentMs = tbTimeline.Value; 
-                    _mediaPlayer.Time = _currentMs; // Smooth scrubbing
+                    int target = tbTimeline.Value;
+                    _currentMs = target; 
+                    Task.Run(() => _mediaPlayer.Time = target); // Smooth scrubbing
                     UpdateTimeLabels(); 
                 } 
             };
@@ -570,19 +683,19 @@ namespace YoutubeDownloader
                 }
             };
             btnPrevSec.Click += (s, e) => {
-                double fps = (_mediaPlayer != null && _mediaPlayer.Fps > 1) ? _mediaPlayer.Fps : _fps;
+                double fps = _fps > 1 ? _fps : 30.0;
                 SeekDelta(-5 * (int)(1000.0 / fps));
             };
             btnPrevFrame.Click += (s, e) => {
-                double fps = (_mediaPlayer != null && _mediaPlayer.Fps > 1) ? _mediaPlayer.Fps : _fps;
+                double fps = _fps > 1 ? _fps : 30.0;
                 SeekDelta(-(int)(1000.0 / fps));
             };
             btnNextFrame.Click += (s, e) => {
-                double fps = (_mediaPlayer != null && _mediaPlayer.Fps > 1) ? _mediaPlayer.Fps : _fps;
+                double fps = _fps > 1 ? _fps : 30.0;
                 SeekDelta((int)(1000.0 / fps));
             };
             btnNextSec.Click += (s, e) => {
-                double fps = (_mediaPlayer != null && _mediaPlayer.Fps > 1) ? _mediaPlayer.Fps : _fps;
+                double fps = _fps > 1 ? _fps : 30.0;
                 SeekDelta(5 * (int)(1000.0 / fps));
             };
             btnLoop.Click += (s, e) => {
@@ -647,10 +760,11 @@ namespace YoutubeDownloader
 
             // Info Labels
             int yLabel = 470;
-            lblCurrentTime = new Label { Location = new Point(20, yLabel), Size = new Size(140, 20), Text = "Playhead: --:--:--", Font = new Font("Segoe UI", 8F), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
-            lblDuration = new Label { Location = new Point(160, yLabel), Size = new Size(140, 20), Text = "Duration: --:--:--", Font = new Font("Segoe UI", 8F), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
-            lblIn = new Label { Location = new Point(310, yLabel), Size = new Size(130, 20), ForeColor = Color.DarkGreen, Font = new Font("Segoe UI", 8F), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
-            lblOut = new Label { Location = new Point(450, yLabel), Size = new Size(130, 20), ForeColor = Color.DarkRed, Font = new Font("Segoe UI", 8F), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            lblCurrentTime = new Label { Location = new Point(20, yLabel), Size = new Size(130, 20), Text = "Playhead: --:--:--", Font = new Font("Segoe UI", 8F), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            lblDuration = new Label { Location = new Point(140, yLabel), Size = new Size(130, 20), Text = "Duration: --:--:--", Font = new Font("Segoe UI", 8F), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            lblVideoInfo = new Label { Location = new Point(265, yLabel), Size = new Size(150, 20), Text = "Video: 0x0 | 0 FPS", Font = new Font("Segoe UI", 8F), ForeColor = Color.FromArgb(0, 120, 215), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            lblIn = new Label { Location = new Point(410, yLabel), Size = new Size(110, 20), ForeColor = Color.DarkGreen, Font = new Font("Segoe UI", 8F), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            lblOut = new Label { Location = new Point(515, yLabel), Size = new Size(110, 20), ForeColor = Color.DarkRed, Font = new Font("Segoe UI", 8F), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
 
             // Export Actions
             int yExport = 505;
@@ -670,7 +784,7 @@ namespace YoutubeDownloader
             this.Controls.AddRange(new Control[] { lblTitle, txtFile, btnBrowse, _videoView, lblTimecode, tbTimeline, pnlInMarker, pnlOutMarker, pnlRangeHighlight, txtSeek, btnSeek, 
                 btnPrevSec, btnPrevFrame, btnPlayPause, btnStop, btnNextFrame, btnNextSec, btnLoop,
                 btnSetIn, btnSetOut, btnClearAll, lblVolIcon, tbVolume, lblAudioGain,
-                lblCurrentTime, lblDuration, lblIn, lblOut, cmbSaveOption, btnSave, btnCancel, lblStatus, pbProgress });
+                lblCurrentTime, lblDuration, lblVideoInfo, lblIn, lblOut, cmbSaveOption, btnSave, btnCancel, lblStatus, pbProgress });
 
             this.Click += (s, e) => btnPlayPause.Focus();
             foreach (Control c in this.Controls) if (c != txtSeek && c != txtFile && c != cmbSaveOption) c.Click += (s, e) => btnPlayPause.Focus();
@@ -732,13 +846,14 @@ namespace YoutubeDownloader
             lblAudioGain.Location = new Point(vX + 42, yMark + 35);
 
             // Center Info Labels - Spread them out slightly more
-            int labelWidth = 580;
-            int labelStartX = mid - (labelWidth / 2);
-            if (labelStartX < 20) labelStartX = 20;
+            int labelWidth = this.Width - 40;
+            int labelStartX = 20;
+            int step = (this.Width - 40) / 5;
             lblCurrentTime.Location = new Point(labelStartX, yLabel);
-            lblDuration.Location = new Point(labelStartX + 150, yLabel);
-            lblIn.Location = new Point(labelStartX + 300, yLabel);
-            lblOut.Location = new Point(labelStartX + 440, yLabel);
+            lblDuration.Location = new Point(labelStartX + step, yLabel);
+            lblVideoInfo.Location = new Point(labelStartX + step * 2, yLabel);
+            lblIn.Location = new Point(labelStartX + step * 3, yLabel);
+            lblOut.Location = new Point(labelStartX + step * 4, yLabel);
 
             // Export Actions
             cmbSaveOption.Location = new Point(20, yExport + 5);
@@ -790,6 +905,8 @@ namespace YoutubeDownloader
             _inMs = -1;
             _outMs = -1;
             _currentMs = 0;
+            _lastSyncMs = 0;
+            _interpolationTimer.Reset();
             _shouldPauseOnLoad = true; // Use event to pause correctly
             
             var media = new Media(_libvlc, new Uri(path));

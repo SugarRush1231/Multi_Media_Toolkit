@@ -1403,8 +1403,12 @@ public partial class Form1 : Form
                                     Verb = "runas"
                                 };
                                 
-                                Process.Start(startInfo);
-                                Application.Exit();
+                                 Process.Start(startInfo);
+                                
+                                // Force immediate exit to release file locks quickly. 
+                                // Using Environment.Exit(0) instead of Application.Exit() to avoid 
+                                // potential delays in closing event handlers during updating.
+                                Environment.Exit(0);
                             }
                             catch (Exception ex)
                             {
