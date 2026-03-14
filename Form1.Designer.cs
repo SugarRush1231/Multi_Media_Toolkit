@@ -39,6 +39,8 @@ partial class Form1
     private YoutubeDownloader.RoundButton btnRemoveSelected;
     private System.Windows.Forms.Label lblStatus;
     private System.Windows.Forms.ProgressBar pbYoutube;
+    private System.Windows.Forms.Label lblYoutubeSavePath;
+    private YoutubeDownloader.RoundButton btnOpenYoutubeFolder;
     private System.Windows.Forms.TextBox txtEditTitle;
     private System.Windows.Forms.ContextMenuStrip contextMenuRemove;
     private System.Windows.Forms.ToolStripMenuItem menuRemoveSelected;
@@ -57,6 +59,8 @@ partial class Form1
     private System.Windows.Forms.Panel panelWebMOutput;
     private System.Windows.Forms.TextBox txtWebMOutput;
     private YoutubeDownloader.RoundButton btnBrowseWebMOutput;
+    private System.Windows.Forms.Label lblWebMSavePath;
+    private YoutubeDownloader.RoundButton btnOpenWebMFolder;
 
     // Tab 3: Codec Fixed
     private System.Windows.Forms.TabPage tabCodec;
@@ -65,6 +69,8 @@ partial class Form1
     private System.Windows.Forms.TextBox txtCodecInput;
     private YoutubeDownloader.RoundButton btnBrowseCodec;
     private YoutubeDownloader.RoundButton btnConvertCodec;
+    private System.Windows.Forms.Label lblCodecSavePath;
+    private YoutubeDownloader.RoundButton btnOpenCodecFolder;
     private YoutubeDownloader.RoundButton btnCancelCodec;
     private System.Windows.Forms.Label lblCodecStatus;
     private System.Windows.Forms.Label lblCodecDesc;
@@ -87,6 +93,8 @@ partial class Form1
     private YoutubeDownloader.RoundButton btnCancelAudio;
     private System.Windows.Forms.Label lblAudioStatus;
     private System.Windows.Forms.ProgressBar pbAudio;
+    private System.Windows.Forms.Label lblAudioSavePath;
+    private YoutubeDownloader.RoundButton btnOpenAudioFolder;
 
     // Tab 4.2: YtDlp (External)
     private System.Windows.Forms.TabPage tabYtDlp;
@@ -108,6 +116,7 @@ partial class Form1
     private System.Windows.Forms.ProgressBar pbXDownload;
     private System.Windows.Forms.Label lblXStatus;
     private System.Windows.Forms.Label lblYtDlpSavePath;
+    private YoutubeDownloader.RoundButton btnOpenYtDlpFolder;
 
     // Tab 4.5: Mini Edit
     private System.Windows.Forms.TabPage tabMiniEdit;
@@ -117,6 +126,8 @@ partial class Form1
     private System.Windows.Forms.TabPage tabSettings;
     private System.Windows.Forms.Label lblSettingsTitle;
     private System.Windows.Forms.CheckBox chkShowNotifications;
+    private System.Windows.Forms.CheckBox chkAutoOpenFolder;
+    private System.Windows.Forms.CheckBox chkAutoUpdateCheck;
     private System.Windows.Forms.Label lblDownloadFolder;
     private System.Windows.Forms.Panel panelSettingsFolder;
     private System.Windows.Forms.TextBox txtDownloadFolder;
@@ -178,6 +189,8 @@ partial class Form1
         btnRemoveSelected = new RoundButton();
         lblStatus = new Label();
         pbYoutube = new ProgressBar();
+        lblYoutubeSavePath = new Label();
+        btnOpenYoutubeFolder = new RoundButton();
         tabYtDlp = new TabPage();
         lblXPrivateMode = new Label();
         tglXPrivateMode = new ToggleSwitch();
@@ -189,6 +202,7 @@ partial class Form1
         pbXDownload = new ProgressBar();
         lblXStatus = new Label();
         lblYtDlpSavePath = new Label();
+        btnOpenYtDlpFolder = new RoundButton();
         lblYtDlpTitle = new Label();
         lblYtDlpDesc = new Label();
         panelYtDlpUrl = new Panel();
@@ -210,6 +224,8 @@ partial class Form1
         cmbWebMFormat = new ComboBox();
         lblWebMStatus = new Label();
         pbWebM = new ProgressBar();
+        lblWebMSavePath = new Label();
+        btnOpenWebMFolder = new RoundButton();
         tabCodec = new TabPage();
         lblCodecTitle = new Label();
         lblCodecDesc = new Label();
@@ -223,6 +239,8 @@ partial class Form1
         btnCancelCodec = new RoundButton();
         lblCodecStatus = new Label();
         pbCodec = new ProgressBar();
+        lblCodecSavePath = new Label();
+        btnOpenCodecFolder = new RoundButton();
         tabAudio = new TabPage();
         lblAudioTitle = new Label();
         panelAudioInput = new Panel();
@@ -236,10 +254,14 @@ partial class Form1
         btnCancelAudio = new RoundButton();
         lblAudioStatus = new Label();
         pbAudio = new ProgressBar();
+        lblAudioSavePath = new Label();
+        btnOpenAudioFolder = new RoundButton();
         tabSettings = new TabPage();
         lblAbout = new Label();
         lblSettingsTitle = new Label();
         chkShowNotifications = new CheckBox();
+        chkAutoOpenFolder = new CheckBox();
+        chkAutoUpdateCheck = new CheckBox();
         lblDownloadFolder = new Label();
         panelSettingsFolder = new Panel();
         txtDownloadFolder = new TextBox();
@@ -468,6 +490,8 @@ partial class Form1
         tabYoutube.Controls.Add(btnRemoveSelected);
         tabYoutube.Controls.Add(lblStatus);
         tabYoutube.Controls.Add(pbYoutube);
+        tabYoutube.Controls.Add(lblYoutubeSavePath);
+        tabYoutube.Controls.Add(btnOpenYoutubeFolder);
         tabYoutube.Location = new Point(4, 5);
         tabYoutube.Name = "tabYoutube";
         tabYoutube.Padding = new Padding(3);
@@ -682,7 +706,6 @@ partial class Form1
         lblStatus.TabIndex = 9;
         lblStatus.Text = "* 대기열 항목 우클릭으로도 취소가 가능합니다.";
         // 
-        // 
         // pbYoutube
         // 
         pbYoutube.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
@@ -692,6 +715,34 @@ partial class Form1
         pbYoutube.Style = ProgressBarStyle.Continuous;
         pbYoutube.TabIndex = 11;
         // 
+        // lblYoutubeSavePath
+        // 
+        lblYoutubeSavePath.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+        lblYoutubeSavePath.AutoSize = true;
+        lblYoutubeSavePath.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+        lblYoutubeSavePath.ForeColor = Color.FromArgb(80, 80, 80);
+        lblYoutubeSavePath.Location = new Point(20, 532);
+        lblYoutubeSavePath.Name = "lblYoutubeSavePath";
+        lblYoutubeSavePath.TabIndex = 12;
+        lblYoutubeSavePath.Text = "현재 저장 위치: ";
+        // 
+        // btnOpenYoutubeFolder
+        // 
+        btnOpenYoutubeFolder.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+        btnOpenYoutubeFolder.BackColor = Color.FromArgb(226, 232, 240);
+        btnOpenYoutubeFolder.BorderRadius = 13;
+        btnOpenYoutubeFolder.FlatAppearance.BorderSize = 0;
+        btnOpenYoutubeFolder.FlatStyle = FlatStyle.Flat;
+        btnOpenYoutubeFolder.Font = new Font("Segoe UI", 8F, FontStyle.Bold);
+        btnOpenYoutubeFolder.ForeColor = Color.FromArgb(51, 65, 85);
+        btnOpenYoutubeFolder.Location = new Point(20, 550);
+        btnOpenYoutubeFolder.Name = "btnOpenYoutubeFolder";
+        btnOpenYoutubeFolder.Size = new Size(80, 26);
+        btnOpenYoutubeFolder.TabIndex = 13;
+        btnOpenYoutubeFolder.Text = "폴더 열기 📂";
+        btnOpenYoutubeFolder.UseVisualStyleBackColor = false;
+        btnOpenYoutubeFolder.Click += BtnOpenYoutubeFolder_Click;
+        // 
         // tabYtDlp
         // 
         tabYtDlp.BackColor = Color.FromArgb(250, 250, 250);
@@ -699,6 +750,7 @@ partial class Form1
         tabYtDlp.Controls.Add(tglXPrivateMode);
         tabYtDlp.Controls.Add(panelXBrowser);
         tabYtDlp.Controls.Add(lblYtDlpSavePath);
+        tabYtDlp.Controls.Add(btnOpenYtDlpFolder);
         tabYtDlp.Controls.Add(lblYtDlpTitle);
         tabYtDlp.Controls.Add(lblYtDlpDesc);
         tabYtDlp.Controls.Add(panelYtDlpUrl);
@@ -829,16 +881,32 @@ partial class Form1
         // 
         // lblYtDlpSavePath
         // 
-        lblYtDlpSavePath.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        lblYtDlpSavePath.Cursor = Cursors.Hand;
-        lblYtDlpSavePath.Font = new Font("Segoe UI", 9F, FontStyle.Underline);
-        lblYtDlpSavePath.ForeColor = Color.Blue;
-        lblYtDlpSavePath.Location = new Point(20, 355);
+        lblYtDlpSavePath.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        lblYtDlpSavePath.AutoSize = true;
+        lblYtDlpSavePath.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+        lblYtDlpSavePath.ForeColor = Color.FromArgb(80, 80, 80);
+        lblYtDlpSavePath.Location = new Point(20, 385);
         lblYtDlpSavePath.Name = "lblYtDlpSavePath";
-        lblYtDlpSavePath.Size = new Size(570, 35);
+        lblYtDlpSavePath.Size = new Size(61, 15);
         lblYtDlpSavePath.TabIndex = 3;
         lblYtDlpSavePath.Text = "저장 위치: ";
-        lblYtDlpSavePath.Click += LblYtDlpSavePath_Click;
+        // 
+        // btnOpenYtDlpFolder
+        // 
+        btnOpenYtDlpFolder.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        btnOpenYtDlpFolder.BackColor = Color.FromArgb(226, 232, 240);
+        btnOpenYtDlpFolder.BorderRadius = 13;
+        btnOpenYtDlpFolder.FlatAppearance.BorderSize = 0;
+        btnOpenYtDlpFolder.FlatStyle = FlatStyle.Flat;
+        btnOpenYtDlpFolder.Font = new Font("Segoe UI", 8F, FontStyle.Bold);
+        btnOpenYtDlpFolder.ForeColor = Color.FromArgb(51, 65, 85);
+        btnOpenYtDlpFolder.Location = new Point(20, 410);
+        btnOpenYtDlpFolder.Name = "btnOpenYtDlpFolder";
+        btnOpenYtDlpFolder.Size = new Size(80, 26);
+        btnOpenYtDlpFolder.TabIndex = 13;
+        btnOpenYtDlpFolder.Text = "폴더 열기 📂";
+        btnOpenYtDlpFolder.UseVisualStyleBackColor = false;
+        btnOpenYtDlpFolder.Click += BtnOpenYtDlpFolder_Click;
         // 
         // lblYtDlpTitle
         // 
@@ -848,7 +916,7 @@ partial class Form1
         lblYtDlpTitle.Name = "lblYtDlpTitle";
         lblYtDlpTitle.Size = new Size(179, 30);
         lblYtDlpTitle.TabIndex = 4;
-        lblYtDlpTitle.Text = "웹 영상 다운로드";
+        lblYtDlpTitle.Text = "웹 사이트 영상 다운로드";
         // 
         // lblYtDlpDesc
         // 
@@ -858,7 +926,7 @@ partial class Form1
         lblYtDlpDesc.Name = "lblYtDlpDesc";
         lblYtDlpDesc.Size = new Size(570, 60);
         lblYtDlpDesc.TabIndex = 5;
-        lblYtDlpDesc.Text = "치지직(video), 인스타 등 다양한 사이트를 지원합니다.\n지원 안내: 치지직은 video, clips 형태의 VOD 주소만 지원합니다. \n(live는 다운버튼 누르기 전 5초 영상이 다운됩니다.)\n\n※틱톡 영상은 우클릭으로 다운 가능하여 제외";
+        lblYtDlpDesc.Text = "치지직, Instagram, SOOP, Pinterest, X, Vimeo 등 다양한 사이트를 지원합니다.\n\n※지원 안내: 치지직, SOOP은 VOD, clips(catch) 형태의 Video 주소만 지원합니다.";
         // 
         // panelYtDlpUrl
         // 
@@ -920,14 +988,14 @@ partial class Form1
         lblYtDlpStatus.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         lblYtDlpStatus.Location = new Point(20, 295);
         lblYtDlpStatus.Name = "lblYtDlpStatus";
-        lblYtDlpStatus.Size = new Size(570, 20);
+        lblYtDlpStatus.Size = new Size(570, 45);
         lblYtDlpStatus.TabIndex = 9;
         lblYtDlpStatus.Text = "대기 중...";
         // 
         // pbYtDlp
         // 
         pbYtDlp.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        pbYtDlp.Location = new Point(20, 325);
+        pbYtDlp.Location = new Point(20, 350);
         pbYtDlp.Name = "pbYtDlp";
         pbYtDlp.Size = new Size(570, 20);
         pbYtDlp.Style = ProgressBarStyle.Continuous;
@@ -946,6 +1014,8 @@ partial class Form1
         tabWebM.Controls.Add(cmbWebMFormat);
         tabWebM.Controls.Add(lblWebMStatus);
         tabWebM.Controls.Add(pbWebM);
+        tabWebM.Controls.Add(lblWebMSavePath);
+        tabWebM.Controls.Add(btnOpenWebMFolder);
         tabWebM.Location = new Point(4, 5);
         tabWebM.Name = "tabWebM";
         tabWebM.Size = new Size(612, 551);
@@ -1091,18 +1161,46 @@ partial class Form1
         lblWebMStatus.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         lblWebMStatus.Location = new Point(20, 295);
         lblWebMStatus.Name = "lblWebMStatus";
-        lblWebMStatus.Size = new Size(570, 20);
+        lblWebMStatus.Size = new Size(570, 45);
         lblWebMStatus.TabIndex = 8;
         lblWebMStatus.Text = "대기 중...";
         // 
         // pbWebM
         // 
         pbWebM.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        pbWebM.Location = new Point(20, 325);
+        pbWebM.Location = new Point(20, 350);
         pbWebM.Name = "pbWebM";
         pbWebM.Size = new Size(570, 20);
         pbWebM.Style = ProgressBarStyle.Continuous;
         pbWebM.TabIndex = 10;
+        // 
+        // lblWebMSavePath
+        // 
+        lblWebMSavePath.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        lblWebMSavePath.AutoSize = true;
+        lblWebMSavePath.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+        lblWebMSavePath.ForeColor = Color.FromArgb(80, 80, 80);
+        lblWebMSavePath.Location = new Point(20, 385);
+        lblWebMSavePath.Name = "lblWebMSavePath";
+        lblWebMSavePath.TabIndex = 11;
+        lblWebMSavePath.Text = "현재 저장 위치: ";
+        // 
+        // btnOpenWebMFolder
+        // 
+        btnOpenWebMFolder.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        btnOpenWebMFolder.BackColor = Color.FromArgb(226, 232, 240);
+        btnOpenWebMFolder.BorderRadius = 13;
+        btnOpenWebMFolder.FlatAppearance.BorderSize = 0;
+        btnOpenWebMFolder.FlatStyle = FlatStyle.Flat;
+        btnOpenWebMFolder.Font = new Font("Segoe UI", 8F, FontStyle.Bold);
+        btnOpenWebMFolder.ForeColor = Color.FromArgb(51, 65, 85);
+        btnOpenWebMFolder.Location = new Point(20, 410);
+        btnOpenWebMFolder.Name = "btnOpenWebMFolder";
+        btnOpenWebMFolder.Size = new Size(80, 26);
+        btnOpenWebMFolder.TabIndex = 12;
+        btnOpenWebMFolder.Text = "폴더 열기 📂";
+        btnOpenWebMFolder.UseVisualStyleBackColor = false;
+        btnOpenWebMFolder.Click += BtnOpenWebMFolder_Click;
         // 
         // tabCodec
         // 
@@ -1117,6 +1215,8 @@ partial class Form1
         tabCodec.Controls.Add(btnCancelCodec);
         tabCodec.Controls.Add(lblCodecStatus);
         tabCodec.Controls.Add(pbCodec);
+        tabCodec.Controls.Add(lblCodecSavePath);
+        tabCodec.Controls.Add(btnOpenCodecFolder);
         tabCodec.Location = new Point(4, 5);
         tabCodec.Name = "tabCodec";
         tabCodec.Size = new Size(612, 551);
@@ -1260,18 +1360,46 @@ partial class Form1
         lblCodecStatus.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         lblCodecStatus.Location = new Point(20, 335);
         lblCodecStatus.Name = "lblCodecStatus";
-        lblCodecStatus.Size = new Size(570, 20);
+        lblCodecStatus.Size = new Size(570, 45);
         lblCodecStatus.TabIndex = 8;
         lblCodecStatus.Text = "대기 중...";
         // 
         // pbCodec
         // 
         pbCodec.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        pbCodec.Location = new Point(20, 365);
+        pbCodec.Location = new Point(20, 390);
         pbCodec.Name = "pbCodec";
         pbCodec.Size = new Size(570, 20);
         pbCodec.Style = ProgressBarStyle.Continuous;
         pbCodec.TabIndex = 12;
+        // 
+        // lblCodecSavePath
+        // 
+        lblCodecSavePath.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        lblCodecSavePath.AutoSize = true;
+        lblCodecSavePath.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+        lblCodecSavePath.ForeColor = Color.FromArgb(80, 80, 80);
+        lblCodecSavePath.Location = new Point(20, 425);
+        lblCodecSavePath.Name = "lblCodecSavePath";
+        lblCodecSavePath.TabIndex = 13;
+        lblCodecSavePath.Text = "현재 저장 위치: ";
+        // 
+        // btnOpenCodecFolder
+        // 
+        btnOpenCodecFolder.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        btnOpenCodecFolder.BackColor = Color.FromArgb(226, 232, 240);
+        btnOpenCodecFolder.BorderRadius = 13;
+        btnOpenCodecFolder.FlatAppearance.BorderSize = 0;
+        btnOpenCodecFolder.FlatStyle = FlatStyle.Flat;
+        btnOpenCodecFolder.Font = new Font("Segoe UI", 8F, FontStyle.Bold);
+        btnOpenCodecFolder.ForeColor = Color.FromArgb(51, 65, 85);
+        btnOpenCodecFolder.Location = new Point(20, 450);
+        btnOpenCodecFolder.Name = "btnOpenCodecFolder";
+        btnOpenCodecFolder.Size = new Size(80, 26);
+        btnOpenCodecFolder.TabIndex = 14;
+        btnOpenCodecFolder.Text = "폴더 열기 📂";
+        btnOpenCodecFolder.UseVisualStyleBackColor = false;
+        btnOpenCodecFolder.Click += BtnOpenCodecFolder_Click;
         // 
         // tabAudio
         // 
@@ -1286,6 +1414,8 @@ partial class Form1
         tabAudio.Controls.Add(btnCancelAudio);
         tabAudio.Controls.Add(lblAudioStatus);
         tabAudio.Controls.Add(pbAudio);
+        tabAudio.Controls.Add(lblAudioSavePath);
+        tabAudio.Controls.Add(btnOpenAudioFolder);
         tabAudio.Location = new Point(4, 5);
         tabAudio.Name = "tabAudio";
         tabAudio.Size = new Size(612, 551);
@@ -1431,18 +1561,46 @@ partial class Form1
         lblAudioStatus.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         lblAudioStatus.Location = new Point(20, 295);
         lblAudioStatus.Name = "lblAudioStatus";
-        lblAudioStatus.Size = new Size(570, 20);
+        lblAudioStatus.Size = new Size(570, 45);
         lblAudioStatus.TabIndex = 8;
         lblAudioStatus.Text = "대기 중...";
         // 
         // pbAudio
         // 
         pbAudio.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        pbAudio.Location = new Point(20, 325);
+        pbAudio.Location = new Point(20, 350);
         pbAudio.Name = "pbAudio";
         pbAudio.Size = new Size(570, 20);
         pbAudio.Style = ProgressBarStyle.Continuous;
         pbAudio.TabIndex = 13;
+        // 
+        // lblAudioSavePath
+        // 
+        lblAudioSavePath.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        lblAudioSavePath.AutoSize = true;
+        lblAudioSavePath.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+        lblAudioSavePath.ForeColor = Color.FromArgb(80, 80, 80);
+        lblAudioSavePath.Location = new Point(20, 385);
+        lblAudioSavePath.Name = "lblAudioSavePath";
+        lblAudioSavePath.TabIndex = 14;
+        lblAudioSavePath.Text = "현재 저장 위치: ";
+        // 
+        // btnOpenAudioFolder
+        // 
+        btnOpenAudioFolder.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        btnOpenAudioFolder.BackColor = Color.FromArgb(226, 232, 240);
+        btnOpenAudioFolder.BorderRadius = 13;
+        btnOpenAudioFolder.FlatAppearance.BorderSize = 0;
+        btnOpenAudioFolder.FlatStyle = FlatStyle.Flat;
+        btnOpenAudioFolder.Font = new Font("Segoe UI", 8F, FontStyle.Bold);
+        btnOpenAudioFolder.ForeColor = Color.FromArgb(51, 65, 85);
+        btnOpenAudioFolder.Location = new Point(20, 410);
+        btnOpenAudioFolder.Name = "btnOpenAudioFolder";
+        btnOpenAudioFolder.Size = new Size(80, 26);
+        btnOpenAudioFolder.TabIndex = 15;
+        btnOpenAudioFolder.Text = "폴더 열기 📂";
+        btnOpenAudioFolder.UseVisualStyleBackColor = false;
+        btnOpenAudioFolder.Click += BtnOpenAudioFolder_Click;
         // 
         // tabSettings
         // 
@@ -1450,6 +1608,8 @@ partial class Form1
         tabSettings.Controls.Add(lblAbout);
         tabSettings.Controls.Add(lblSettingsTitle);
         tabSettings.Controls.Add(chkShowNotifications);
+        tabSettings.Controls.Add(chkAutoOpenFolder);
+        tabSettings.Controls.Add(chkAutoUpdateCheck);
         tabSettings.Controls.Add(lblDownloadFolder);
         tabSettings.Controls.Add(panelSettingsFolder);
         tabSettings.Controls.Add(btnBrowseFolder);
@@ -1468,8 +1628,8 @@ partial class Form1
         lblAbout.Location = new Point(20, 465);
         lblAbout.Name = "lblAbout";
         lblAbout.Size = new Size(570, 80);
-        lblAbout.TabIndex = 7;
-        lblAbout.Text = "Multi Media Toolkit\nCreated by 김병석\n© 2026 all rights reserved.\n(kbs318@naver.com)";
+        lblAbout.TabIndex = 17;
+        lblAbout.Text = "Multi Media Toolkit v1.2.0\nCreated by 김병석\n© 2026 all rights reserved.\n(kbs318@naver.com)";
         lblAbout.TextAlign = ContentAlignment.BottomRight;
         // 
         // lblSettingsTitle
@@ -1492,14 +1652,34 @@ partial class Form1
         chkShowNotifications.TabIndex = 9;
         chkShowNotifications.Text = "알림 표시 (다운로드 완료/실패)";
         // 
+        // chkAutoOpenFolder
+        // 
+        chkAutoOpenFolder.AutoSize = true;
+        chkAutoOpenFolder.Font = new Font("Segoe UI", 11F);
+        chkAutoOpenFolder.Location = new Point(20, 115);
+        chkAutoOpenFolder.Name = "chkAutoOpenFolder";
+        chkAutoOpenFolder.Size = new Size(236, 24);
+        chkAutoOpenFolder.TabIndex = 10;
+        chkAutoOpenFolder.Text = "다운로드 완료 시 저장 폴더 열기";
+        // 
+        // chkAutoUpdateCheck
+        // 
+        chkAutoUpdateCheck.AutoSize = true;
+        chkAutoUpdateCheck.Font = new Font("Segoe UI", 11F);
+        chkAutoUpdateCheck.Location = new Point(20, 150);
+        chkAutoUpdateCheck.Name = "chkAutoUpdateCheck";
+        chkAutoUpdateCheck.Size = new Size(236, 24);
+        chkAutoUpdateCheck.TabIndex = 11;
+        chkAutoUpdateCheck.Text = "시작 시 자동으로 업데이트 확인";
+        // 
         // lblDownloadFolder
         // 
         lblDownloadFolder.AutoSize = true;
         lblDownloadFolder.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
-        lblDownloadFolder.Location = new Point(20, 130);
+        lblDownloadFolder.Location = new Point(20, 200);
         lblDownloadFolder.Name = "lblDownloadFolder";
         lblDownloadFolder.Size = new Size(107, 20);
-        lblDownloadFolder.TabIndex = 10;
+        lblDownloadFolder.TabIndex = 12;
         lblDownloadFolder.Text = "기본 저장 경로";
         // 
         // panelSettingsFolder
@@ -1507,10 +1687,10 @@ partial class Form1
         panelSettingsFolder.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         panelSettingsFolder.BackColor = Color.White;
         panelSettingsFolder.Controls.Add(txtDownloadFolder);
-        panelSettingsFolder.Location = new Point(20, 160);
+        panelSettingsFolder.Location = new Point(20, 230);
         panelSettingsFolder.Name = "panelSettingsFolder";
         panelSettingsFolder.Size = new Size(450, 40);
-        panelSettingsFolder.TabIndex = 11;
+        panelSettingsFolder.TabIndex = 13;
         panelSettingsFolder.Paint += Panel_Paint;
         // 
         // txtDownloadFolder
@@ -1532,10 +1712,10 @@ partial class Form1
         btnBrowseFolder.FlatStyle = FlatStyle.Flat;
         btnBrowseFolder.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
         btnBrowseFolder.ForeColor = Color.FromArgb(71, 85, 105);
-        btnBrowseFolder.Location = new Point(490, 160);
+        btnBrowseFolder.Location = new Point(490, 230);
         btnBrowseFolder.Name = "btnBrowseFolder";
         btnBrowseFolder.Size = new Size(100, 40);
-        btnBrowseFolder.TabIndex = 12;
+        btnBrowseFolder.TabIndex = 14;
         btnBrowseFolder.Text = "경로 변경";
         btnBrowseFolder.UseVisualStyleBackColor = false;
         btnBrowseFolder.Click += BtnBrowseFolder_Click;
@@ -1549,10 +1729,10 @@ partial class Form1
         btnSaveSettings.FlatStyle = FlatStyle.Flat;
         btnSaveSettings.Font = new Font("Segoe UI", 12F, FontStyle.Bold);
         btnSaveSettings.ForeColor = Color.White;
-        btnSaveSettings.Location = new Point(20, 240);
+        btnSaveSettings.Location = new Point(20, 290);
         btnSaveSettings.Name = "btnSaveSettings";
         btnSaveSettings.Size = new Size(570, 50);
-        btnSaveSettings.TabIndex = 13;
+        btnSaveSettings.TabIndex = 15;
         btnSaveSettings.Text = "설정 저장 ✨";
         btnSaveSettings.UseVisualStyleBackColor = false;
         btnSaveSettings.Click += BtnSaveSettings_Click;
@@ -1566,10 +1746,10 @@ partial class Form1
         btnCheckUpdate.FlatStyle = FlatStyle.Flat;
         btnCheckUpdate.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
         btnCheckUpdate.ForeColor = Color.White;
-        btnCheckUpdate.Location = new Point(20, 310);
+        btnCheckUpdate.Location = new Point(20, 360);
         btnCheckUpdate.Name = "btnCheckUpdate";
         btnCheckUpdate.Size = new Size(570, 45);
-        btnCheckUpdate.TabIndex = 9;
+        btnCheckUpdate.TabIndex = 16;
         btnCheckUpdate.Text = "새 버전 업데이트 확인 🔄";
         btnCheckUpdate.UseVisualStyleBackColor = false;
         btnCheckUpdate.Click += BtnCheckUpdate_Click;

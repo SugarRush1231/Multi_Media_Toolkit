@@ -12,13 +12,13 @@ namespace YoutubeDownloader
         public event Action<double>? OnProgressChanged;
         public event Action<string>? OnDownloadCompleted;
 
-        public async Task<string> DownloadVideoAsync(string videoUrl, string saveDirectory, string browser = "none", System.Threading.CancellationToken token = default, string cookieFile = "", Dictionary<string, string> headers = null)
+        public async Task<string> DownloadVideoAsync(string videoUrl, string saveDirectory, string browser = "none", System.Threading.CancellationToken token = default, string cookieFile = "", Dictionary<string, string>? headers = null)
         {
             // 1. URL 정화
             videoUrl = videoUrl.Trim().Trim('\"', '\'', ' ');
             if (videoUrl.StartsWith("yt-dlp", StringComparison.OrdinalIgnoreCase)) videoUrl = videoUrl.Remove(0, 6).Trim();
 
-            // 2. [치지직 클립 리졸버]
+            // 2. [치지직 클립 리졸버 및 SOOP 리졸버]
             string customFileName = "";
             if (videoUrl.Contains("chzzk.naver.com/clips/"))
             {
@@ -31,6 +31,24 @@ namespace YoutubeDownloader
                 else
                 {
                     throw new Exception("치지직 클립 정보를 가져오는 데 실패했습니다.\n(주소를 다시 확인하거나 잠시 후 시도해주세요.)");
+                }
+            }
+            else if (videoUrl.Contains("vod.sooplive.co.kr/player/"))
+            {
+                var resolved = await ResolveSoopCatchAsync(videoUrl);
+                if (resolved != null)
+                {
+                    videoUrl = resolved.Value.Url;
+                    customFileName = resolved.Value.Title;
+                }
+            }
+            else if (videoUrl.Contains("tv.naver.com/"))
+            {
+                var resolved = await ResolveNaverTvAsync(videoUrl);
+                if (resolved != null)
+                {
+                    videoUrl = resolved.Value.Url;
+                    customFileName = resolved.Value.Title;
                 }
             }
 
@@ -76,6 +94,7 @@ namespace YoutubeDownloader
             // 사이트별로 적절한 Referer 설정
             string referer = "";
             if (videoUrl.Contains("chzzk.naver.com")) referer = "https://chzzk.naver.com/";
+            else if (videoUrl.Contains("naver.com")) referer = "https://tv.naver.com/";
             else if (videoUrl.Contains("x.com") || videoUrl.Contains("twitter.com")) referer = "https://x.com/";
             
             string arguments = $"--newline --encoding utf-8 --user-agent \"{userAgent}\" ";
@@ -258,6 +277,146 @@ namespace YoutubeDownloader
             {
                 Debug.WriteLine($"[ChzzkResolver] 오류: {ex.Message}");
                 throw new Exception($"클립 분석 중 오류 발생: {ex.Message}");
+            }
+        }
+
+        private async Task<(string Url, string Title)?> ResolveSoopCatchAsync(string originalUrl)
+        {
+            try
+            {
+                // URL 형식: https://vod.sooplive.co.kr/player/189489847/catch
+                var match = Regex.Match(originalUrl, @"/player/(\d+)");
+                if (!match.Success) return null;
+                string titleNo = match.Groups[1].Value;
+
+                using var client = new System.Net.Http.HttpClient();
+                client.Timeout = TimeSpan.FromSeconds(15);
+                client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+
+                var content = new System.Net.Http.StringContent($"nTitleNo={titleNo}", System.Text.Encoding.UTF8, "application/x-www-form-urlencoded");
+                var res = await client.PostAsync("https://api.m.sooplive.co.kr/station/video/a/view", content);
+                
+                if (!res.IsSuccessStatusCode) return null;
+
+                var bytes = await res.Content.ReadAsByteArrayAsync();
+                string json = System.Text.Encoding.UTF8.GetString(bytes);
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("data", out var data)) return null;
+                
+                string title = data.TryGetProperty("title", out var t) ? t.GetString() ?? $"Soop_{titleNo}" : $"Soop_{titleNo}";
+                
+                string? m3u8Url = null;
+                if (data.TryGetProperty("files", out var files) && files.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    foreach (var file in files.EnumerateArray())
+                    {
+                        if (file.TryGetProperty("file", out var f) && f.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            m3u8Url = f.GetString();
+                            break;
+                        }
+                    }
+                }
+                
+                if (string.IsNullOrEmpty(m3u8Url)) return null;
+
+                // 유효하지 않은 파일명 문자 제거 (안전을 위해 정규식 방식도 고려할 수 있으나 기본 방식 채택)
+                string safeTitle = string.Join("_", title.Split(Path.GetInvalidFileNameChars()));
+                return (m3u8Url, safeTitle);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[SoopResolver] 오류: {ex.Message}");
+                return null;
+            }
+        }
+
+        private async Task<(string Url, string Title)?> ResolveNaverTvAsync(string originalUrl)
+        {
+            try
+            {
+                using var client = new System.Net.Http.HttpClient();
+                client.Timeout = TimeSpan.FromSeconds(15);
+                client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+                client.DefaultRequestHeaders.Add("Referer", "https://tv.naver.com/");
+
+                string html = await client.GetStringAsync(originalUrl);
+
+                // 1. 영상 제목 및 기본 메타데이터 추출
+                string rawTitle = "NaverTV_Video";
+                var titleMatch = Regex.Match(html, @"<meta property=""og:title"" content=""([^""]+)""");
+                if (titleMatch.Success) rawTitle = titleMatch.Groups[1].Value;
+
+                // 파일명으로 사용할 수 있도록 특수문자 제거
+                string safeTitle = string.Join("_", rawTitle.Split(Path.GetInvalidFileNameChars()));
+
+                // 2. VideoId 및 InKey 추출 (Naver TV는 다양한 곳에 숨겨둠)
+                // 패턴 A: 스크립트 내 nhn.rmcplayer.VodVideoData 형태
+                // 패턴 B: __NEXT_DATA__ 또는 rmcPlayer 내부 JSON 형태
+                var vidMatch = Regex.Match(html, @"""(?:videoId|mediaId|media_id|vid)""\s*:\s*""([^""]+)""");
+                var keyMatch = Regex.Match(html, @"""(?:inKey|inkey|key|token)""\s*:\s*""([^""]+)""");
+
+                string videoId = vidMatch.Success ? vidMatch.Groups[1].Value : "";
+                string inKey = keyMatch.Success ? keyMatch.Groups[1].Value : "";
+
+                // 3. 만약 ID/Key를 못 찾았다면, HTML 본문에서 직접 m3u8 주소 검색 (최후의 수단)
+                if (string.IsNullOrEmpty(videoId) || string.IsNullOrEmpty(inKey))
+                {
+                    var m3u8Match = Regex.Match(html, @"""(https://[^""]+?\.m3u8[^""]*)""");
+                    if (m3u8Match.Success)
+                    {
+                        string directUrl = m3u8Match.Groups[1].Value.Replace("\\/", "/");
+                        return (directUrl, safeTitle);
+                    }
+                }
+
+                if (string.IsNullOrEmpty(videoId)) return null;
+
+                // 4. Playback API 호출 (Neon Player 백엔드)
+                // inKey가 없는 경우(일부 클립)에는 ID만으로 시도하거나 null 반환
+                if (string.IsNullOrEmpty(inKey)) return null; 
+
+                string playbackUrl = $"https://apis.naver.com/neonplayer/vodplay/v2/playback/{videoId}?key={inKey}&deviceType=pc";
+                var pbRes = await client.GetAsync(playbackUrl);
+                if (!pbRes.IsSuccessStatusCode) return null;
+
+                var pbBytes = await pbRes.Content.ReadAsByteArrayAsync();
+                string pbJson = System.Text.Encoding.UTF8.GetString(pbBytes);
+                using var pbDoc = System.Text.Json.JsonDocument.Parse(pbJson);
+                
+                string? m3u8Url = null;
+                void FindM3u(System.Text.Json.JsonElement element)
+                {
+                    if (m3u8Url != null) return;
+                    if (element.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    {
+                        foreach (var prop in element.EnumerateObject())
+                        {
+                            if (prop.Name == "m3u" && prop.Value.ValueKind == System.Text.Json.JsonValueKind.String)
+                            {
+                                m3u8Url = prop.Value.GetString();
+                                return;
+                            }
+                            FindM3u(prop.Value);
+                        }
+                    }
+                    else if (element.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        foreach (var item in element.EnumerateArray()) FindM3u(item);
+                    }
+                }
+                FindM3u(pbDoc.RootElement);
+
+                if (string.IsNullOrEmpty(m3u8Url)) return null;
+
+                return (m3u8Url, safeTitle);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[NaverTvResolver] 오류: {ex.Message}");
+                return null;
             }
         }
     }

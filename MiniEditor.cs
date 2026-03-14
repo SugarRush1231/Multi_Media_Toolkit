@@ -42,6 +42,8 @@ namespace YoutubeDownloader
         private ComboBox cmbSaveOption;
         private RoundButton btnSave;
         private ProgressBar pbProgress;
+        private Label lblSavePath;
+        private RoundButton btnOpenFolder;
         private Label lblStatus;
         private Label lblTimecode;
         private RoundButton btnCancel;
@@ -772,19 +774,28 @@ namespace YoutubeDownloader
             cmbSaveOption.Items.AddRange(new string[] { "원본 저장", "Premiere 호환 (H.264)", "오디오만 추출 (MP3)" });
             cmbSaveOption.SelectedIndex = 0;
 
-            btnSave = new RoundButton { Text = " 저장 🎞️", Location = new Point(230, yExport), Size = new Size(180, 40), BackColor = Color.FromArgb(2, 132, 199), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, BorderRadius = 15, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            btnSave = new RoundButton { Text = " 저장 🎞️", Location = new Point(230, yExport), Size = new Size(130, 40), BackColor = Color.FromArgb(2, 132, 199), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, BorderRadius = 15, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             btnSave.Click += BtnSave_Click;
 
-            lblStatus = new Label { Location = new Point(420, yExport + 10), AutoSize = true, Text = "준비", Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
-            btnCancel = new RoundButton { Text = "취소", Location = new Point(510, yExport), Size = new Size(80, 40), BackColor = Color.FromArgb(255, 71, 87), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, BorderRadius = 15, Visible = false, Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+            lblStatus = new Label { Location = new Point(20, 535), AutoSize = true, Text = "준비", Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            btnCancel = new RoundButton { Text = "취소 ✖", Location = new Point(230, yExport), Size = new Size(130, 40), BackColor = Color.FromArgb(255, 71, 87), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, BorderRadius = 15, Visible = false, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             btnCancel.Click += (s, e) => _saveCts?.Cancel();
 
             pbProgress = new ProgressBar { Location = new Point(20, 555), Size = new Size(570, 10), Style = ProgressBarStyle.Continuous, Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right };
+            
+            lblSavePath = new Label { Anchor = AnchorStyles.Bottom | AnchorStyles.Left, AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), ForeColor = Color.FromArgb(80, 80, 80), Text = "현재 저장 위치: " + (SettingsManager.Settings?.DefaultDownloadFolder ?? "") };
+            btnOpenFolder = new RoundButton { Anchor = AnchorStyles.Bottom | AnchorStyles.Left, BackColor = Color.FromArgb(226, 232, 240), BorderRadius = 13, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(51, 65, 85), Size = new Size(80, 26), Text = "폴더 열기 📂" };
+            btnOpenFolder.FlatAppearance.BorderSize = 0;
+            btnOpenFolder.Click += BtnOpenFolder_Click;
+            lblSavePath.SizeChanged += (s, e) => {
+                btnOpenFolder.Left = lblSavePath.Right + 5;
+                btnOpenFolder.Top = lblSavePath.Top + (lblSavePath.Height - btnOpenFolder.Height) / 2;
+            };
 
             this.Controls.AddRange(new Control[] { lblTitle, txtFile, btnBrowse, _videoView, lblTimecode, tbTimeline, pnlInMarker, pnlOutMarker, pnlRangeHighlight, txtSeek, btnSeek, 
                 btnPrevSec, btnPrevFrame, btnPlayPause, btnStop, btnNextFrame, btnNextSec, btnLoop,
                 btnSetIn, btnSetOut, btnClearAll, lblVolIcon, tbVolume, lblAudioGain,
-                lblCurrentTime, lblDuration, lblVideoInfo, lblIn, lblOut, cmbSaveOption, btnSave, btnCancel, lblStatus, pbProgress });
+                lblCurrentTime, lblDuration, lblVideoInfo, lblIn, lblOut, cmbSaveOption, btnSave, btnCancel, lblStatus, pbProgress, lblSavePath, btnOpenFolder });
 
             this.Click += (s, e) => btnPlayPause.Focus();
             foreach (Control c in this.Controls) if (c != txtSeek && c != txtFile && c != cmbSaveOption) c.Click += (s, e) => btnPlayPause.Focus();
@@ -858,8 +869,8 @@ namespace YoutubeDownloader
             // Export Actions
             cmbSaveOption.Location = new Point(20, yExport + 5);
             btnSave.Location = new Point(230, yExport);
-            lblStatus.Location = new Point(420, yExport + 10);
-            btnCancel.Location = new Point(this.Width - 100, yExport);
+            btnCancel.Location = new Point(230, yExport);
+            lblStatus.Location = new Point(20, yProgress - 20);
 
             // Timeline & Seek (These also need Y update)
             tbTimeline.Location = new Point(15, yTimeline);
@@ -891,6 +902,11 @@ namespace YoutubeDownloader
             lblTimecode.Location = new Point(mid - (lblTimecode.Width / 2), yTimecode);
 
             UpdateMarkerPositions();
+
+            // Save Location (Next to btnSave)
+            lblSavePath.Location = new Point(370, yExport + 12);
+            btnOpenFolder.Left = lblSavePath.Right + 5;
+            btnOpenFolder.Top = lblSavePath.Top + (lblSavePath.Height - btnOpenFolder.Height) / 2;
 
             // Progress Bar
             pbProgress.Location = new Point(20, yProgress);
@@ -934,6 +950,7 @@ namespace YoutubeDownloader
 
             btnSave.Enabled = false;
             btnCancel.Visible = true;
+            btnCancel.BringToFront();
             lblStatus.Text = "Saving...";
             pbProgress.Value = 0;
 
@@ -954,6 +971,10 @@ namespace YoutubeDownloader
 
                 await RunFFmpegWithProgress(args, _saveCts.Token);
                 lblStatus.Text = "저장 성공!";
+                if (SettingsManager.Settings.AutoOpenFolder)
+                {
+                    try { Process.Start("explorer.exe", Path.GetDirectoryName(outputFile)); } catch { }
+                }
                 MessageBox.Show("영상이 성공적으로 저장되었습니다.");
             }
             catch (OperationCanceledException) { lblStatus.Text = "취소됨"; }
@@ -1012,6 +1033,27 @@ namespace YoutubeDownloader
 
             if (process.ExitCode != 0 && !token.IsCancellationRequested)
                 throw new Exception("FFmpeg failed with code " + process.ExitCode);
+        }
+
+        private void BtnOpenFolder_Click(object sender, EventArgs e)
+        {
+            string path = SettingsManager.Settings?.DefaultDownloadFolder ?? "";
+            if (string.IsNullOrEmpty(path)) path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+            
+            if (System.IO.Directory.Exists(path))
+            {
+                try { Process.Start("explorer.exe", path); } catch { }
+            }
+            else
+            {
+                MessageBox.Show("폴더가 존재하지 않습니다: " + path);
+            }
+        }
+
+        public void UpdateSavePath(string newPath)
+        {
+            if (lblSavePath != null)
+                lblSavePath.Text = "현재 저장 위치: " + newPath;
         }
     }
 }
