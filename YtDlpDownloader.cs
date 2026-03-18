@@ -91,13 +91,15 @@ namespace YoutubeDownloader
             // 네이버 등 외부 사이트는 User-Agent와 Referer가 중요합니다.
             string userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
             
+            string arguments = $"--newline --encoding utf-8 --user-agent \"{userAgent}\" --no-warnings ";
+            
             // 사이트별로 적절한 Referer 설정
             string referer = "";
             if (videoUrl.Contains("chzzk.naver.com")) referer = "https://chzzk.naver.com/";
             else if (videoUrl.Contains("naver.com")) referer = "https://tv.naver.com/";
             else if (videoUrl.Contains("x.com") || videoUrl.Contains("twitter.com")) referer = "https://x.com/";
-            
-            string arguments = $"--newline --encoding utf-8 --user-agent \"{userAgent}\" ";
+            else if (videoUrl.Contains("instagram.com")) referer = "https://www.instagram.com/";
+
             if (!string.IsNullOrEmpty(referer)) arguments += $"--referer \"{referer}\" ";
             
             // 쿠키(로그인 정보) 설정
@@ -122,6 +124,8 @@ namespace YoutubeDownloader
                 }
             }
             
+
+
             arguments += $"--ffmpeg-location \"{ffmpegDir}\" --merge-output-format mp4 -o \"{outputTemplate}\" \"{videoUrl}\"";
 
             string errorOutput = string.Empty;

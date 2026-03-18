@@ -46,7 +46,7 @@ public partial class Form1 : Form
     private CancellationTokenSource? _ytDlpCts;
     private int _lastWidth = 800;
     private int _lastHeight = 600;
-    private const string CURR_VERSION = "1.2.0";
+    private const string CURR_VERSION = "1.2.1";
 
     // [Twitter/X Private Extraction] Captured Data
     private string _capturedM3u8Url = "";
@@ -225,6 +225,18 @@ public partial class Form1 : Form
         {
             string baseToolPath = Path.Combine(baseDir, tool);
             string rootToolPath = Path.Combine(projectRoot, tool);
+
+            // Validate and clean baseToolPath
+            if (File.Exists(baseToolPath) && (IsGitLfsPointer(baseToolPath) || !HasMzHeader(baseToolPath)))
+            {
+                try { File.Delete(baseToolPath); } catch { }
+            }
+
+            // Validate and clean rootToolPath
+            if (File.Exists(rootToolPath) && (IsGitLfsPointer(rootToolPath) || !HasMzHeader(rootToolPath)))
+            {
+                try { File.Delete(rootToolPath); } catch { }
+            }
 
             // 1. 프로젝트 루트에 있으면 실행 폴더로 복사
             if (!File.Exists(baseToolPath) && File.Exists(rootToolPath))
@@ -623,23 +635,15 @@ public partial class Form1 : Form
             
             _ytDlpCts = new CancellationTokenSource();
             
-            // [Human-like Delay] 트위터 봇 감지 우회
-            if (tglXPrivateMode.Checked)
-            {
-                Random rnd = new Random();
-                int delay = rnd.Next(1500, 4200);
-                string waitMsg = $"차단 방지를 위해 대기 중... ({delay/1000.0:F1}초)";
-                lblXStatus.Text = waitMsg;
-                lblYtDlpStatus.Text = waitMsg;
-                await Task.Delay(delay, _ytDlpCts.Token);
-            }
+            // [Human-like Delay] 이전에는 봇 감지를 피하려 최대 4초 대기했으나, 
+            // 현재는 완벽한 쿠키 연동 방식이므로 불필요한 대기(렉 현상)를 제거합니다.
 
             _lastYtDlpPct = -1; // Reset progress tracking for new download
             await EnsureYtDlpAsync(_ytDlpCts.Token);
 
             lblYtDlpStatus.Text = "다운로드 준비 중...";
             pbYtDlp.Value = 0;
-            if (tglXPrivateMode.Checked) {
+            if (tglXPrivateMode.Checked || tglInstaPrivateMode.Checked) {
                 lblXStatus.Text = "다운로드 준비 중...";
                 pbXDownload.Value = 0;
             }
@@ -663,16 +667,19 @@ public partial class Form1 : Form
             string cookieFile = "";
             Dictionary<string, string> customHeaders = null;
             
-            if (tglXPrivateMode.Checked)
+            string lowerUrlSuccess = url.ToLower();
+            bool isTargetPlatform = lowerUrlSuccess.Contains("x.com") || lowerUrlSuccess.Contains("twitter.com") || lowerUrlSuccess.Contains("instagram.com");
+
+            if (tglXPrivateMode.Checked || tglInstaPrivateMode.Checked || isTargetPlatform)
             {
                 try
                 {
-                    // WebView2에서 쿠키를 추출하여 임시 파일로 저장
+                    // [핵심] WebView2에서 쿠키를 추출 (토글이 꺼져 있어도 유지된 로그인 정보 활용)
                     cookieFile = await ExportWebViewCookiesAsync();
                     
-                    if (string.IsNullOrEmpty(cookieFile))
+                    if (string.IsNullOrEmpty(cookieFile) && (tglXPrivateMode.Checked || tglInstaPrivateMode.Checked))
                     {
-                        MessageBox.Show("브라우저에서 로그인 정보를 찾을 수 없습니다.\n먼저 비공개 모드 브라우저에서 로그인을 완료해 주세요.", "알림", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        MessageBox.Show("브라우저에서 로그인 정보를 찾을 수 없습니다.\n먼저 비공개 영상 화면에서 로그인을 완료해 주세요.", "알림", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                         return;
                     }
 
@@ -681,12 +688,14 @@ public partial class Form1 : Form
                     if (!string.IsNullOrEmpty(_capturedAuthToken)) customHeaders["authorization"] = _capturedAuthToken;
                     if (!string.IsNullOrEmpty(_capturedCsrfToken)) customHeaders["x-csrf-token"] = _capturedCsrfToken;
                     if (!string.IsNullOrEmpty(_capturedUserAgent)) customHeaders["User-Agent"] = _capturedUserAgent;
-                    
-                    // x-csrf-token은 보통 ct0 쿠키와 일치해야 트위터가 신뢰함
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show($"로그인 정보를 가져오지 못했습니다: {ex.Message}", "알림", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    if (tglXPrivateMode.Checked || tglInstaPrivateMode.Checked)
+                    {
+                        MessageBox.Show($"로그인 정보를 가져오지 못했습니다: {ex.Message}", "알림", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
                 }
             }
             
@@ -699,7 +708,7 @@ public partial class Form1 : Form
             string successMsg = "다운로드 완료! (아래 파란색 '저장 위치'를 눌러 폴더를 여세요)";
             lblYtDlpStatus.Text = successMsg;
             pbYtDlp.Value = 100;
-            if (tglXPrivateMode.Checked)
+            if (tglXPrivateMode.Checked || tglInstaPrivateMode.Checked)
             {
                 lblXStatus.Text = successMsg;
                 pbXDownload.Value = 100;
@@ -715,7 +724,6 @@ public partial class Form1 : Form
                 platformSuccess = uri.Host.Replace("www.", "");
             } catch { }
 
-            string lowerUrlSuccess = url.ToLower();
             if (lowerUrlSuccess.Contains("x.com") || lowerUrlSuccess.Contains("twitter.com")) 
                 platformSuccess = tglXPrivateMode.Checked ? "X(비공개)" : "X";
             else if (lowerUrlSuccess.Contains("chzzk")) platformSuccess = "치지직";
@@ -1827,7 +1835,12 @@ public partial class Form1 : Form
         string ffmpegPath = Path.Combine(baseDir, "ffmpeg.exe");
         string ffprobePath = Path.Combine(baseDir, "ffprobe.exe");
 
-        if (File.Exists(ffmpegPath) && File.Exists(ffprobePath)) return;
+        if (File.Exists(ffmpegPath) && !IsGitLfsPointer(ffmpegPath) && HasMzHeader(ffmpegPath) &&
+            File.Exists(ffprobePath) && !IsGitLfsPointer(ffprobePath) && HasMzHeader(ffprobePath)) return;
+
+        // If files exist but are invalid, delete them
+        if (File.Exists(ffmpegPath) && (IsGitLfsPointer(ffmpegPath) || !HasMzHeader(ffmpegPath))) try { File.Delete(ffmpegPath); } catch { }
+        if (File.Exists(ffprobePath) && (IsGitLfsPointer(ffprobePath) || !HasMzHeader(ffprobePath))) try { File.Delete(ffprobePath); } catch { }
 
         // Fallback: Check project root
         string projectRoot = Path.GetFullPath(Path.Combine(baseDir, "..", "..", ".."));
@@ -1858,14 +1871,19 @@ public partial class Form1 : Form
         string baseDir = AppDomain.CurrentDomain.BaseDirectory;
         string ytDlpPath = Path.Combine(baseDir, "yt-dlp.exe");
         
-        if (File.Exists(ytDlpPath)) return;
+        if (File.Exists(ytDlpPath) && !IsGitLfsPointer(ytDlpPath) && HasMzHeader(ytDlpPath)) return;
+
+        if (File.Exists(ytDlpPath) && (IsGitLfsPointer(ytDlpPath) || !HasMzHeader(ytDlpPath)))
+        {
+            try { File.Delete(ytDlpPath); } catch { }
+        }
 
         // Fallback: Check project root (useful during development/dotnet run)
         // Usually 3 levels up from bin/Debug/net10.0-windows
         string projectRoot = Path.GetFullPath(Path.Combine(baseDir, "..", "..", ".."));
         string rootYtDlp = Path.Combine(projectRoot, "yt-dlp.exe");
 
-        if (File.Exists(rootYtDlp))
+        if (File.Exists(rootYtDlp) && !IsGitLfsPointer(rootYtDlp) && HasMzHeader(rootYtDlp))
         {
             try {
                 File.Copy(rootYtDlp, ytDlpPath, true);
@@ -1873,6 +1891,10 @@ public partial class Form1 : Form
                 if (tglXPrivateMode.Checked) lblXStatus.Text = "yt-dlp를 실행 폴더로 복사했습니다.";
                 return;
             } catch { /* ignored, will try download */ }
+        }
+        else if (File.Exists(rootYtDlp))
+        {
+            try { File.Delete(rootYtDlp); } catch { }
         }
 
         try
@@ -1935,10 +1957,13 @@ public partial class Form1 : Form
                         if (root.TryGetProperty("request", out var request))
                         {
                             string url = request.GetProperty("url").GetString() ?? "";
-                            if (url.Contains(".m3u8") || url.Contains("video.twimg.com"))
+                            if (url.Contains(".m3u8") || url.Contains("video.twimg.com") || url.Contains("scontent") || url.Contains("fbcdn") || url.Contains("cdninstagram.com"))
                             {
-                                _capturedM3u8Url = url;
-                                Debug.WriteLine($"[X-Intercept] Video Found: {url}");
+                                if (url.Contains(".mp4") || url.Contains(".m3u8"))
+                                {
+                                    _capturedM3u8Url = url;
+                                    Debug.WriteLine($"[MMT-Intercept] Video Found: {url}");
+                                }
                             }
                             if (request.TryGetProperty("headers", out var headers))
                             {
@@ -1985,6 +2010,9 @@ public partial class Form1 : Form
                     webViewX.CoreWebView2.Navigate("https://x.com/login");
                 }
             }
+
+            if (lblXGuide != null) lblXGuide.Text = "게시물을 누른 후 다운로드 해주세요";
+            if (lblXStatus != null) lblXStatus.Text = "영상 페이지(Post)로 이동해 주세요.";
             
             this.PerformLayout();
             this.Refresh();
@@ -2009,6 +2037,151 @@ public partial class Form1 : Form
             this.PerformLayout();
             this.Refresh();
         }
+    }
+    private async void TglInstaPrivateMode_CheckedChanged(object sender, EventArgs e)
+    {
+        if (tglInstaPrivateMode.Checked)
+        {
+            if (tglXPrivateMode.Checked) tglXPrivateMode.Checked = false;
+
+            // 이미 로그인된 상태면 브라우저를 다시 띄울 필요 없음
+            if (_isInstaLoggedIn)
+            {
+                lblInstaPrivateMode.Text = "Instagram 로그인 ✅";
+                lblYtDlpStatus.Text = "✅ 인스타그램 로그인 상태. 주소만 넣고 다운로드하세요.";
+                return;
+            }
+
+            _lastWidth = this.Width;
+            _lastHeight = this.Height;
+
+            SetupXPrivateUI();
+            this.WindowState = FormWindowState.Maximized;
+
+            panelXBrowser.Parent = this; 
+            panelXBrowser.BringToFront();
+            panelXBrowser.Visible = true;
+            panelXBrowser.Dock = DockStyle.Fill;
+            
+            if (tableLayoutX != null) tableLayoutX.Visible = true;
+            
+            if (webViewX.CoreWebView2 != null) 
+            {
+                webViewX.CoreWebView2.Stop();
+                // [로그인 성공 자동 감지] URL이 로그인 페이지에서 벽어나면 자동으로 바로 닫힘 (렌 방지)
+                webViewX.CoreWebView2.NavigationCompleted -= InstaLoginWatcher;
+                webViewX.CoreWebView2.NavigationCompleted += InstaLoginWatcher;
+                webViewX.CoreWebView2.Navigate("https://www.instagram.com/accounts/login/");
+            }
+            else
+            {
+                await PreInitializeWebView2Async();
+                if (webViewX.CoreWebView2 != null)
+                {
+                    webViewX.CoreWebView2.NavigationCompleted -= InstaLoginWatcher;
+                    webViewX.CoreWebView2.NavigationCompleted += InstaLoginWatcher;
+                    webViewX.CoreWebView2.Navigate("https://www.instagram.com/accounts/login/");
+                }
+            }
+
+            if (lblXGuide != null) lblXGuide.Text = "인스타그램에 로그인 후, 닫기를 눌러 나간 다음 영상 주소를 넣어 다운로드 하세요.";
+            if (lblXGuide != null) lblXGuide.Text = "인스타그램에 로그인하면 자동으로 닫힙니다.";
+            if (lblXStatus != null) lblXStatus.Text = "로그인 대기 중...";
+            
+            this.PerformLayout();
+            this.Refresh();
+        }
+        else
+        {
+            // [토글 OFF = 로그아웃]
+            // 1. 무거운 웹 즉시 정지
+            if (webViewX.CoreWebView2 != null)
+            {
+                webViewX.CoreWebView2.NavigationCompleted -= InstaLoginWatcher;
+                webViewX.CoreWebView2.Stop();
+                webViewX.CoreWebView2.Navigate("about:blank");
+            }
+
+            // 2. 웹뷰 복원
+            this.WindowState = FormWindowState.Normal;
+            this.MinimumSize = new Size(800, 600);
+            panelXBrowser.Visible = false;
+            panelXBrowser.Parent = tabYtDlp; 
+            panelXBrowser.Dock = DockStyle.Fill;
+            
+            if (_lastWidth > 0 && _lastHeight > 0)
+            {
+                this.Width = _lastWidth;
+                this.Height = _lastHeight;
+            }
+
+            // 3. 인스타그램 쿠키 삭제 (로그아웃)
+            _ = ClearInstagramCookiesAsync();
+            
+            lblInstaPrivateMode.Text = "Instagram 전용 영상 모드";
+            lblYtDlpStatus.Text = "인스타그램 로그아웃 완료.";
+            this.PerformLayout();
+            this.Refresh();
+        }
+    }
+
+    // [인스타 로그인 성공 자동 감지기] URL이 /accounts/login/에서 벽어나면 로그인 성공으로 판단
+    private void InstaLoginWatcher(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs e)
+    {
+        if (webViewX.CoreWebView2 == null) return;
+        string currentUrl = webViewX.CoreWebView2.Source;
+        
+        // 로그인 페이지가 아닌 곳으로 이동했다면 = 로그인 성공!
+        if (currentUrl.Contains("instagram.com") && !currentUrl.Contains("/accounts/login"))
+        {
+            // 즉시 무거운 인스타 웹을 죽이고 자동으로 나가기
+            webViewX.CoreWebView2.NavigationCompleted -= InstaLoginWatcher;
+            webViewX.CoreWebView2.Stop();
+            webViewX.CoreWebView2.Navigate("about:blank");
+
+            this.Invoke((Action)(() =>
+            {
+                // 브라우저만 닫고 토글은 ON 유지 (로그인 상태 표시)
+                _isInstaLoggedIn = true;
+
+                // 브라우저 화면 닫기
+                this.WindowState = FormWindowState.Normal;
+                this.MinimumSize = new Size(800, 600);
+                panelXBrowser.Visible = false;
+                panelXBrowser.Parent = tabYtDlp;
+                panelXBrowser.Dock = DockStyle.Fill;
+
+                if (_lastWidth > 0 && _lastHeight > 0)
+                {
+                    this.Width = _lastWidth;
+                    this.Height = _lastHeight;
+                }
+
+                lblInstaPrivateMode.Text = "Instagram 로그인 ✅";
+                lblYtDlpStatus.Text = "✅ 인스타그램 로그인 성공! 이제 주소만 넣고 다운로드하세요.";
+                MessageBox.Show("인스타그램 로그인 성공!\n\n이제부터 인스타그램 영상 주소를 넣고\n[다운로드 시작]만 누르면 됩니다.\n\n토글을 끄면 로그아웃됩니다.", "🎉 성공", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                this.PerformLayout();
+                this.Refresh();
+            }));
+        }
+    }
+
+    private bool _isInstaLoggedIn = false;
+
+    private async Task ClearInstagramCookiesAsync()
+    {
+        try
+        {
+            if (webViewX.CoreWebView2 == null) await PreInitializeWebView2Async();
+            if (webViewX.CoreWebView2 != null)
+            {
+                var cookieManager = webViewX.CoreWebView2.CookieManager;
+                var cookies = await cookieManager.GetCookiesAsync("https://www.instagram.com");
+                foreach (var cookie in cookies) cookieManager.DeleteCookie(cookie);
+            }
+            _isInstaLoggedIn = false;
+        }
+        catch { }
     }
 
     private void SetupXPrivateUI()
@@ -2115,26 +2288,37 @@ public partial class Form1 : Form
         string currentUrl = webViewX.Source.ToString();
         string lowerUrl = currentUrl.ToLower();
         
-        // x.com 이나 twitter.com 의 status 페이지인지 확인 (조금 더 유연하게)
+        // x.com, twitter.com, instagram.com 페이지인지 확인
         bool isTweetPage = lowerUrl.Contains("x.com") || lowerUrl.Contains("twitter.com");
+        bool isInstaPage = lowerUrl.Contains("instagram.com");
 
-        if (isTweetPage)
+        if (isTweetPage || isInstaPage)
         {
             txtYtDlpUrl.Text = currentUrl;
-            string statusMsg = "트윗 주소 인식 완료";
+            string platformName = isInstaPage ? "인스타그램" : "트윗";
+            string statusMsg = $"{platformName} 주소 인식 완료";
             
             if (!string.IsNullOrEmpty(_capturedM3u8Url))
             {
-                statusMsg = "영상 스트림 포착 성공 (HLS)";
-                txtYtDlpUrl.Text = _capturedM3u8Url; // 원본 트윗 대신 m3u8 주소를 기본으로 설정
+                statusMsg = $"{platformName} 영상 스트림 포착 성공 ⚡";
+                
+                // 인스타그램의 경우 chunked 주소(byte-range)면 정화 처리 고려
+                string finalUrl = _capturedM3u8Url;
+                if (isInstaPage && finalUrl.Contains("bytestart="))
+                {
+                    // [Optimization] byte range 파라미터가 있으면 제거하여 전체 영상을 시도할 수 있게 함
+                    // 하지만 복잡하므로 일단 포착된 주소 그대로 사용함 (yt-dlp가 처리할 가능성 높음)
+                }
+                
+                txtYtDlpUrl.Text = finalUrl; 
             }
 
             lblYtDlpStatus.Text = statusMsg + ": " + currentUrl;
-            MessageBox.Show($"{statusMsg}!\n\n이제 '바로 다운' 버튼을 눌러주세요.\n(비공개 계정이라도 브라우저에서 재생이 가능하다면 다운로드 됩니다.)", "포착 성공");
+            MessageBox.Show($"{statusMsg}!\n\n이제 '바로 다운로드' 버튼을 눌러주세요.", "포착 성공");
         }
         else
         {
-            MessageBox.Show($"현재 페이지: {webViewX.Source}\n\n영상이 있는 트윗 본문 페이지로 이동한 후 눌러주세요.", "알림");
+            MessageBox.Show($"현재 페이지: {webViewX.Source}\n\n영상이 있는 본문 페이지로 이동한 후 눌러주세요.", "알림");
         }
     }
 
@@ -2149,7 +2333,18 @@ public partial class Form1 : Form
 
     private void BtnXClose_Click(object sender, EventArgs e)
     {
-        tglXPrivateMode.Checked = false; // CheckedChanged에서 panelXBrowser.Visible = false 처리됨
+        // [강제 정지] 인스타/X 웹의 무거운 JS를 즉시 죅이고 버튼 반응성 확보
+        if (webViewX.CoreWebView2 != null)
+        {
+            webViewX.CoreWebView2.NavigationCompleted -= InstaLoginWatcher;
+            webViewX.CoreWebView2.Stop();
+            webViewX.CoreWebView2.Navigate("about:blank");
+        }
+        
+        if (tglInstaPrivateMode.Checked)
+            tglInstaPrivateMode.Checked = false;
+        else
+            tglXPrivateMode.Checked = false;
     }
 
     private async Task<string> ExportWebViewCookiesAsync()
@@ -2171,8 +2366,8 @@ public partial class Form1 : Form
             
             foreach (var c in cookies)
             {
-                // x.com 또는 twitter.com 관련 쿠키만 포함
-                if (!c.Domain.Contains("x.com") && !c.Domain.Contains("twitter.com")) continue;
+                // x.com, twitter.com, instagram.com 관련 쿠키만 포함
+                if (!c.Domain.Contains("x.com") && !c.Domain.Contains("twitter.com") && !c.Domain.Contains("instagram.com")) continue;
 
                 count++;
                 string domain = c.Domain;
@@ -2409,5 +2604,29 @@ public partial class Form1 : Form
             SettingsManager.Save();
         }
         catch { }
+    }
+
+    private static bool IsGitLfsPointer(string path)
+    {
+        if (!File.Exists(path)) return false;
+        try
+        {
+            using var sr = new StreamReader(path);
+            string? first = sr.ReadLine();
+            return first != null && first.StartsWith("version https://git-lfs.github.com/spec/v1", StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
+    private static bool HasMzHeader(string path)
+    {
+        if (!File.Exists(path)) return false;
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (fs.Length < 2) return false;
+            return fs.ReadByte() == 'M' && fs.ReadByte() == 'Z';
+        }
+        catch { return false; }
     }
 }

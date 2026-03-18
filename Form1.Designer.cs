@@ -107,6 +107,8 @@ partial class Form1
     private System.Windows.Forms.Label lblYtDlpStatus;
     private System.Windows.Forms.ProgressBar pbYtDlp;
     private YoutubeDownloader.ToggleSwitch tglXPrivateMode;
+    private System.Windows.Forms.Label lblInstaPrivateMode;
+    private YoutubeDownloader.ToggleSwitch tglInstaPrivateMode;
     private System.Windows.Forms.Label lblXPrivateMode;
     private System.Windows.Forms.Panel panelXBrowser;
     private Microsoft.Web.WebView2.WinForms.WebView2 webViewX;
@@ -194,6 +196,8 @@ partial class Form1
         tabYtDlp = new TabPage();
         lblXPrivateMode = new Label();
         tglXPrivateMode = new ToggleSwitch();
+        lblInstaPrivateMode = new Label();
+        tglInstaPrivateMode = new ToggleSwitch();
         panelXBrowser = new Panel();
         webViewX = new Microsoft.Web.WebView2.WinForms.WebView2();
         btnXCapture = new RoundButton();
@@ -748,6 +752,8 @@ partial class Form1
         tabYtDlp.BackColor = Color.FromArgb(250, 250, 250);
         tabYtDlp.Controls.Add(lblXPrivateMode);
         tabYtDlp.Controls.Add(tglXPrivateMode);
+        tabYtDlp.Controls.Add(lblInstaPrivateMode);
+        tabYtDlp.Controls.Add(tglInstaPrivateMode);
         tabYtDlp.Controls.Add(panelXBrowser);
         tabYtDlp.Controls.Add(lblYtDlpSavePath);
         tabYtDlp.Controls.Add(btnOpenYtDlpFolder);
@@ -783,6 +789,27 @@ partial class Form1
         tglXPrivateMode.Size = new Size(60, 25);
         tglXPrivateMode.TabIndex = 1;
         tglXPrivateMode.CheckedChanged += TglXPrivateMode_CheckedChanged;
+        // 
+        // lblInstaPrivateMode
+        // 
+        lblInstaPrivateMode.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        lblInstaPrivateMode.AutoSize = true;
+        lblInstaPrivateMode.Font = new Font("Segoe UI", 9.5F, FontStyle.Bold);
+        lblInstaPrivateMode.Location = new Point(345, 222);
+        lblInstaPrivateMode.Name = "lblInstaPrivateMode";
+        lblInstaPrivateMode.Size = new Size(160, 17);
+        lblInstaPrivateMode.TabIndex = 2;
+        lblInstaPrivateMode.Text = "Instagram 전용 영상 모드";
+        // 
+        // tglInstaPrivateMode
+        // 
+        tglInstaPrivateMode.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        tglInstaPrivateMode.Location = new Point(530, 218);
+        tglInstaPrivateMode.Name = "tglInstaPrivateMode";
+        tglInstaPrivateMode.Padding = new Padding(6);
+        tglInstaPrivateMode.Size = new Size(60, 25);
+        tglInstaPrivateMode.TabIndex = 3;
+        tglInstaPrivateMode.CheckedChanged += TglInstaPrivateMode_CheckedChanged;
         // 
         // panelXBrowser
         // 
@@ -1629,7 +1656,7 @@ partial class Form1
         lblAbout.Name = "lblAbout";
         lblAbout.Size = new Size(570, 80);
         lblAbout.TabIndex = 17;
-        lblAbout.Text = "Multi Media Toolkit v1.2.0\nCreated by 김병석\n© 2026 all rights reserved.\n(kbs318@naver.com)";
+        lblAbout.Text = "Multi Media Toolkit v1.2.1\nCreated by 김병석\n© 2026 all rights reserved.\n(kbs318@naver.com)";
         lblAbout.TextAlign = ContentAlignment.BottomRight;
         // 
         // lblSettingsTitle
