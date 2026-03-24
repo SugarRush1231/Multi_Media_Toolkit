@@ -13,9 +13,9 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationIcon>mmt.ico</ApplicationIcon>
-    <Version>1.2.1</Version>
-    <AssemblyVersion>1.2.1.0</AssemblyVersion>
-    <FileVersion>1.2.1.0</FileVersion>
+    <Version>1.2.2</Version>
+    <AssemblyVersion>1.2.2.0</AssemblyVersion>
+    <FileVersion>1.2.2.0</FileVersion>
     <Description>Multi Media Toolkit (YoutubeDownloader)</Description>
     <Product>Multi Media Toolkit</Product>
     <Authors>KimBS</Authors>
@@ -32,8 +32,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="changelog.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="mmt.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </None>
     <None Include="yt-dlp.exe" Condition="Exists('yt-dlp.exe')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

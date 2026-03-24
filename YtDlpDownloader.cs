@@ -52,9 +52,9 @@ namespace YoutubeDownloader
                 }
             }
 
-            string appDir = AppDomain.CurrentDomain.BaseDirectory;
-            string ytDlpPath = Path.Combine(appDir, "yt-dlp.exe"); 
-            string ffmpegPath = Path.Combine(appDir, "ffmpeg.exe"); 
+            string ytDlpPath = SettingsManager.GetYtDlpPath();
+            string ffmpegPath = SettingsManager.GetFFmpegPath();
+            string ffmpegDir = Path.GetDirectoryName(ffmpegPath) ?? AppDomain.CurrentDomain.BaseDirectory;
 
             // 파일 중복 체크 및 이름변경 (customFileName이 있을 때)
             if (!string.IsNullOrEmpty(customFileName))
@@ -86,7 +86,6 @@ namespace YoutubeDownloader
                 // 차후 더 정교한 체크를 위해서는 --get-filename 등이 필요합니다.
             }
 
-            string ffmpegDir = Path.GetDirectoryName(ffmpegPath) ?? appDir;
 
             // 네이버 등 외부 사이트는 User-Agent와 Referer가 중요합니다.
             string userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";

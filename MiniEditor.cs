@@ -999,7 +999,7 @@ namespace YoutubeDownloader
             using var process = new Process();
             process.StartInfo = new ProcessStartInfo
             {
-                FileName = "ffmpeg.exe",
+                FileName = SettingsManager.GetFFmpegPath(),
                 Arguments = args,
                 UseShellExecute = false,
                 CreateNoWindow = true,

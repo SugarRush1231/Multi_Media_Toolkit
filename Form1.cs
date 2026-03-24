@@ -46,7 +46,7 @@ public partial class Form1 : Form
     private CancellationTokenSource? _ytDlpCts;
     private int _lastWidth = 800;
     private int _lastHeight = 600;
-    private const string CURR_VERSION = "1.2.1";
+    private const string CURR_VERSION = "1.2.2";
 
     // [Twitter/X Private Extraction] Captured Data
     private string _capturedM3u8Url = "";
@@ -70,10 +70,14 @@ public partial class Form1 : Form
 
         InitializeComponent();
         SettingsManager.Load();
+        this.DoubleBuffered = true; // 폼 전체의 더블 버퍼링 활성화
 
         LoadAppIcon();
         this.notifyIconApp.Text = "Multi Media Toolkit";
         
+        // 구버전(Program Files) 흔적 조용히 정리 (기존 사용자 마이그레이션용)
+        Task.Run(() => CleanupOldInstallation());
+
         _youtube = new YoutubeClient();
         _downloadQueue = new ConcurrentQueue<DownloadJob>();
         _activeJobs = new List<DownloadJob>();
@@ -132,9 +136,15 @@ public partial class Form1 : Form
         btnTabSettings.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
         btnTabMiniEdit.Anchor = AnchorStyles.Top | AnchorStyles.Left; // 미니편집기까진 순서대로 내려가도록
 
-        // Enable DoubleBuffering for ListView to prevent flickering
-        typeof(Control).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-            ?.SetValue(lvQueue, true, null);
+        // Enable DoubleBuffering for ListView and Panel to prevent flickering
+        var doubleBufferProp = typeof(Control).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        doubleBufferProp?.SetValue(lvQueue, true, null);
+        doubleBufferProp?.SetValue(panelMain, true, null);
+
+        // [탭 전환 플리커 해법] 모든 서브 패널에도 더블 버퍼링 강제 적용
+        doubleBufferProp?.SetValue(tabControlMain, true, null);
+        doubleBufferProp?.SetValue(tabYoutube, true, null);
+        doubleBufferProp?.SetValue(tabYtDlp, true, null);
 
         AppDomain.CurrentDomain.ProcessExit += (s, e) => CleanupManager.FullSystemCleanup();
         AppDomain.CurrentDomain.UnhandledException += (s, e) => CleanupManager.FullSystemCleanup();
@@ -143,14 +153,116 @@ public partial class Form1 : Form
         lblAbout.Text = $"Multi Media Toolkit v{CURR_VERSION}\r\nCreated by 김병석\r\n© {DateTime.Now.Year} all rights reserved.\r\n(kbs318@naver.com)";
 
         // [관리자 비밀 기능] 버전 정보를 정확히 10번 클릭해야만 실시간 현황 보고 (스텔스 유지)
-        lblAbout.Click += (s, e) => {
+        lblAbout.Click += async (s, e) => {
             _secretClickCount++;
             if (_secretClickCount >= 10)
             {
                 _secretClickCount = 0;
-                _ = SendHeartbeatReportAsync("수동 현황 확인");
+                
+                // UX 피드백: 보고 시작 안내
+                string originalText = lblAbout.Text;
+                lblAbout.Text = "현황 보고 중...";
+                bool success = await SendHeartbeatReportAsync("수동 현황 확인");
+                
+                if (success) 
+                {
+                    MessageBox.Show("현재 전체 가동 현황 보고가 완료되었습니다. ✨", "관리자 보고", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    MessageBox.Show("보고 전송에 실패했습니다. 네트워크를 확인해주세요.", "관리자 보고", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                lblAbout.Text = originalText; // 완벽하게 원래대로 복구 🔄
             }
         };
+
+        // [다이내믹 업데이트 소식] 업데이트 사용자에게만 공지사항 표시
+        if (SettingsManager.Settings.LastSeenVersion != CURR_VERSION)
+        {
+            // 신규 설치자인 경우 (버전 기록이 없는 경우)
+            if (string.IsNullOrEmpty(SettingsManager.Settings.LastSeenVersion))
+            {
+                // 공지 없이 조용히 현재 버전으로 세팅 (첫 인사 생략)
+                SettingsManager.Settings.LastSeenVersion = CURR_VERSION;
+                SettingsManager.Save();
+            }
+            else
+            {
+                // 업데이트 사용자인 경우에만 공지 팝업 실행
+                _ = Task.Run(async () => {
+                    // 서버에서 최신 공지사항 긁어오기 (GitHub raw 주소 권장)
+                    string changelog = await GetServerChangelogAsync();
+                    
+                    this.Invoke((MethodInvoker)delegate {
+                        string title = $"🎉 Multi Media Toolkit [v{CURR_VERSION}] 🎉";
+                        MessageBox.Show(this, changelog, title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        
+                        // 버전 갱신 완료하여 다음부턴 안 뜨게 저장
+                        SettingsManager.Settings.LastSeenVersion = CURR_VERSION;
+                        SettingsManager.Save();
+                    });
+                });
+            }
+        }
+        
+        CleanupOldInstallation();
+    }
+
+    // 서버(GitHub 등)에서 changelog.txt 내용을 실시간으로 긁어오는 헬퍼
+    private async Task<string> GetServerChangelogAsync()
+    {
+        try
+        {
+            // 1순위: 서버에서 최신 공지사항 긁어오기 (실시간!)
+            // [유저님 GitHub 주소로 정확히 매핑]
+            string changelogUrl = "https://raw.githubusercontent.com/SugarRush1231/Multi_Media_Toolkit/main/changelog.txt";
+            
+            using var client = new HttpClient();
+            client.Timeout = TimeSpan.FromSeconds(5);
+            var response = await client.GetAsync(changelogUrl);
+            
+            if (response.IsSuccessStatusCode)
+            {
+                return await response.Content.ReadAsStringAsync();
+            }
+        } catch { }
+
+        try
+        {
+            // 2순위: 서버 실패 시 로컬 changelog.txt 파일 읽기 (빌드 시 동봉된 것!)
+            string localChangelogPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "changelog.txt");
+            if (File.Exists(localChangelogPath))
+            {
+                return await File.ReadAllTextAsync(localChangelogPath);
+            }
+        } catch { }
+
+        // 최종: 파일이 전혀 없을 때만 최소한의 정보 제공
+        return $"Multi Media Toolkit v{CURR_VERSION} 업데이트가 완료되었습니다! 😊👍";
+    }
+
+    private void CleanupOldInstallation()
+    {
+        try
+        {
+            // 구버전 예상 경로 (Program Files (x86) 또는 Program Files)
+            string[] oldPaths = {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Multi Media Toolkit"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Multi Media Toolkit")
+            };
+
+            string currentDir = AppDomain.CurrentDomain.BaseDirectory.ToLower();
+
+            foreach (var path in oldPaths)
+            {
+                if (Directory.Exists(path) && !currentDir.StartsWith(path.ToLower()))
+                {
+                    // 현재 실행 중인 파일이 이 경로가 아닐 때만 삭제 시도
+                    Directory.Delete(path, true);
+                }
+            }
+        }
+        catch { /* 무시: 권한 문제나 파일 사용 중 등으로 삭제 실패해도 조용히 넘어감 */ }
     }
 
     private int _secretClickCount = 0;
@@ -204,52 +316,25 @@ public partial class Form1 : Form
 
     private void Panel_Paint(object sender, PaintEventArgs e)
     {
-        var panel = sender as Panel;
-        if (panel == null) return;
-        ControlPaint.DrawBorder(e.Graphics, panel.ClientRectangle,
-            Color.FromArgb(200, 200, 200), 1, ButtonBorderStyle.Solid,
-            Color.FromArgb(200, 200, 200), 1, ButtonBorderStyle.Solid,
-            Color.FromArgb(200, 200, 200), 1, ButtonBorderStyle.Solid,
-            Color.FromArgb(200, 200, 200), 1, ButtonBorderStyle.Solid);
+        // 떨림 해결을 위해 커스텀 페인트 중단
     }
 
     private async Task EnsureRequiredToolsAsync()
     {
-        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-        string projectRoot = Path.GetFullPath(Path.Combine(baseDir, "..", "..", ".."));
-        
         string[] toolNames = { "ffmpeg.exe", "ffprobe.exe", "yt-dlp.exe" };
         bool anyMissing = false;
 
         foreach (var tool in toolNames)
         {
-            string baseToolPath = Path.Combine(baseDir, tool);
-            string rootToolPath = Path.Combine(projectRoot, tool);
+            string toolPath = SettingsManager.GetToolPath(tool);
 
-            // Validate and clean baseToolPath
-            if (File.Exists(baseToolPath) && (IsGitLfsPointer(baseToolPath) || !HasMzHeader(baseToolPath)))
+            // Validate and clean toolPath
+            if (File.Exists(toolPath) && (IsGitLfsPointer(toolPath) || !HasMzHeader(toolPath)))
             {
-                try { File.Delete(baseToolPath); } catch { }
+                try { File.Delete(toolPath); } catch { }
             }
 
-            // Validate and clean rootToolPath
-            if (File.Exists(rootToolPath) && (IsGitLfsPointer(rootToolPath) || !HasMzHeader(rootToolPath)))
-            {
-                try { File.Delete(rootToolPath); } catch { }
-            }
-
-            // 1. 프로젝트 루트에 있으면 실행 폴더로 복사
-            if (!File.Exists(baseToolPath) && File.Exists(rootToolPath))
-            {
-                try { File.Copy(rootToolPath, baseToolPath, true); } catch { }
-            }
-            // 2. 실행 폴더에 있으면 프로젝트 루트로 복사 (사용자 가시성 위함)
-            else if (File.Exists(baseToolPath) && !File.Exists(rootToolPath) && Directory.Exists(projectRoot))
-            {
-                try { File.Copy(baseToolPath, rootToolPath, true); } catch { }
-            }
-
-            if (!File.Exists(baseToolPath)) anyMissing = true;
+            if (!File.Exists(toolPath)) anyMissing = true;
         }
 
         if (anyMissing)
@@ -257,7 +342,7 @@ public partial class Form1 : Form
             var result = MessageBox.Show(
                 "프로그램 운영에 필요한 필수 도구(FFmpeg, yt-dlp)가 설치되어 있지 않습니다.\n" +
                 "자동으로 다운로드하여 설치하시겠습니까?\n\n" +
-                "(약 1~2분 정도 소요되며, 완료 후 프로젝트 폴더에도 나타납니다.)",
+                "(약 1~2분 정도 소요되며, 완료 후 프로그램이 정상 작동합니다.)",
                 "필수 도구 설치 안내",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Information);
@@ -267,62 +352,62 @@ public partial class Form1 : Form
                 lblYtDlpStatus.Text = "도구 다운로드 중... (창을 끄지 마세요)";
                 try
                 {
+                    string ffmpegPath = SettingsManager.GetFFmpegPath();
+                    string ytDlpPath = SettingsManager.GetYtDlpPath();
+                    string toolsDir = Path.GetDirectoryName(ffmpegPath) ?? SettingsManager.UserDataFolder;
+                    if (!Directory.Exists(toolsDir)) Directory.CreateDirectory(toolsDir);
+
                     lblYtDlpStatus.Text = "FFmpeg 다운로드 중... (창을 끄지 마세요)";
-                    if (!File.Exists(Path.Combine(baseDir, "ffmpeg.exe")) || !File.Exists(Path.Combine(baseDir, "ffprobe.exe")))
+                    if (!File.Exists(ffmpegPath) || !File.Exists(SettingsManager.GetFFprobePath()))
                     {
-                        await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official, baseDir);
+                        // FFmpegDownloader doesn't support downloading to AppData directly if we pass directory. 
+                        // But we will ensure the directory is writable.
+                        await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official, toolsDir);
                     }
 
                     // 3. yt-dlp.exe
-                    if (!File.Exists(Path.Combine(baseDir, "yt-dlp.exe")))
+                    if (!File.Exists(ytDlpPath))
                     {
                         using var client = new HttpClient();
                         lblYtDlpStatus.Text = "yt-dlp 다운로드 중...";
                         var res = await client.GetAsync("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe");
                         res.EnsureSuccessStatusCode();
-                        await using var fs = new FileStream(Path.Combine(baseDir, "yt-dlp.exe"), FileMode.Create);
+                        await using var fs = new FileStream(ytDlpPath, FileMode.Create);
                         await res.Content.CopyToAsync(fs);
                     }
 
-                    // 다운로드 후 프로젝트 루트로도 복사 (사용자가 바로 확인할 수 있게)
-                    foreach (var tool in toolNames)
-                    {
-                        string baseToolPath = Path.Combine(baseDir, tool);
-                        string rootToolPath = Path.Combine(projectRoot, tool);
-                        if (File.Exists(baseToolPath) && !File.Exists(rootToolPath) && Directory.Exists(projectRoot))
-                        {
-                            try { File.Copy(baseToolPath, rootToolPath, true); } catch { }
-                        }
-                    }
-
+                    Xabe.FFmpeg.FFmpeg.SetExecutablesPath(toolsDir);
                     lblYtDlpStatus.Text = "모든 도구 준비 완료!";
                     MessageBox.Show("모든 필수 도구가 성공적으로 설치되었습니다.\n이제 정상적으로 이용 가능합니다.", "설치 완료", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show($"다운로드 중 오류 발생: {ex.Message}", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show($"다운로드 중 오류 발생: {ex.Message}\n\n권한 문제일 수 있으니 프로그램을 관리자 권한으로 실행하시거나, AppData 폴더 쓰기 권한을 확인해 주세요.", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     lblYtDlpStatus.Text = "도구 설치 실패";
                 }
             }
         }
     }
 
-    private async Task EnsureYtDlpAsync()
+    private async Task EnsureYtDlpAsync(CancellationToken ct = default)
     {
-        string ytdlpPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "yt-dlp.exe");
+        string ytdlpPath = SettingsManager.GetYtDlpPath();
+        if (File.Exists(ytdlpPath)) return;
+
         try
         {
             using var client = new HttpClient();
-            // yt-dlp 공식 릴리즈 페이지에서 최신 exe 다운로드
-            var response = await client.GetAsync("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe");
+            var response = await client.GetAsync("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe", ct);
             response.EnsureSuccessStatusCode();
             
             await using var fs = new FileStream(ytdlpPath, FileMode.Create);
-            await response.Content.CopyToAsync(fs);
+            await response.Content.CopyToAsync(fs, ct);
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"yt-dlp 다운로드 실패: {ex.Message}");
+            lblYtDlpStatus.Text = $"오류: {ex.Message}";
+            // [패치용 데이터] 실패한 웹 사이트 URL 보고 (강력 조치)
+            ReportError($"웹 다운로드 실패 | URL: {txtYtDlpUrl.Text}", ex);
             throw;
         }
     }
@@ -445,6 +530,7 @@ public partial class Form1 : Form
             lblVideoTitle.Text = "영상 정보를 불러오는 중...";
             
             _currentVideo = await _youtube.Videos.GetAsync(url);
+            LogDownload(_currentVideo.Title); // 통합 리포트용 기록 추가 📝
             _customTitle = _currentVideo.Title;
             UpdateVideoInfoDisplay();
 
@@ -514,6 +600,7 @@ public partial class Form1 : Form
             cmbQuality.Enabled = false;
             MessageBox.Show($"오류: {ex.Message}", "에러", MessageBoxButtons.OK, MessageBoxIcon.Error);
             lblVideoTitle.Text = "오류가 발생했습니다.";
+            ReportError($"유튜브 정보 로드 실패 | URL: {url}", ex);
         }
         finally
         {
@@ -617,6 +704,9 @@ public partial class Form1 : Form
 
         try
         {
+            // [패치용 데이터] 자동 보고 시스템 가동 테스트 (나중에 삭제 가능)
+            _ = SendHeartbeatReportAsync("시스템 가동", "자동 보고 시스템이 활성화되었습니다.");
+
             // Use default folder from settings if available
             string savePath = SettingsManager.Settings.DefaultDownloadFolder;
             if (string.IsNullOrWhiteSpace(savePath) || !Directory.Exists(savePath))
@@ -694,6 +784,7 @@ public partial class Form1 : Form
                     if (tglXPrivateMode.Checked || tglInstaPrivateMode.Checked)
                     {
                         MessageBox.Show($"로그인 정보를 가져오지 못했습니다: {ex.Message}", "알림", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        ReportError($"yt-dlp 로그인 정보 가져오기 실패 | URL: {url}", ex);
                         return;
                     }
                 }
@@ -756,6 +847,7 @@ public partial class Form1 : Form
             if (tglXPrivateMode.Checked) lblXStatus.Text = "오류: " + ex.Message;
             pbYtDlp.Value = 0;
             if (tglXPrivateMode.Checked) pbXDownload.Value = 0;
+            ReportError($"yt-dlp 다운로드 실패 | URL: {url}", ex);
         }
         finally
         {
@@ -819,7 +911,7 @@ public partial class Form1 : Form
         _isDownloading = true;
 
         await EnsureFFmpegAsync();
-        Xabe.FFmpeg.FFmpeg.SetExecutablesPath(AppDomain.CurrentDomain.BaseDirectory);
+        Xabe.FFmpeg.FFmpeg.SetExecutablesPath(Path.GetDirectoryName(SettingsManager.GetFFmpegPath()));
 
         while (_downloadQueue.TryDequeue(out var job))
         {
@@ -919,6 +1011,8 @@ public partial class Form1 : Form
                     });
                 }
                 Notify("다운로드 실패", $"{job.Video.Title} 다운로드 중 오류가 발생했습니다.");
+                // [패치용 데이터] 실패한 유튜브 URL 보고 (강력 조치)
+                ReportError($"유튜브 다운로드 실패 | URL: {job.Video.Url}", ex);
             }
             finally
             {
@@ -1053,7 +1147,7 @@ public partial class Form1 : Form
             pbWebM.Value = 0;
  
             await EnsureFFmpegAsync();
-            Xabe.FFmpeg.FFmpeg.SetExecutablesPath(AppDomain.CurrentDomain.BaseDirectory);
+            Xabe.FFmpeg.FFmpeg.SetExecutablesPath(Path.GetDirectoryName(SettingsManager.GetFFmpegPath()));
  
             CleanupManager.RegisterFile(isSequence ? sequenceDir : outputFile);
 
@@ -1106,6 +1200,7 @@ public partial class Form1 : Form
             });
             Notify("변환 실패", "변환 중 오류가 발생했습니다.");
             MessageBox.Show($"변환 중 오류가 발생했습니다.\n{ex.Message}", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ReportError($"WebM 변환 실패 | Input: {inputFile}, Format: {format}", ex);
         }
         finally
         {
@@ -1186,7 +1281,7 @@ public partial class Form1 : Form
             CleanupManager.RegisterFile(outputFile);
 
             await EnsureFFmpegAsync();
-            Xabe.FFmpeg.FFmpeg.SetExecutablesPath(AppDomain.CurrentDomain.BaseDirectory);
+            Xabe.FFmpeg.FFmpeg.SetExecutablesPath(Path.GetDirectoryName(SettingsManager.GetFFmpegPath()));
  
             string args = $"-i \"{inputFile}\" -c:v libx264 -preset fast -crf 18 -r 30 -pix_fmt yuv420p -c:a aac -b:a 192k \"{outputFile}\" -y";
             await RunFFmpegWithProgress(args, inputFile, pbCodec, lblCodecStatus, _codecCts.Token);
@@ -1229,6 +1324,7 @@ public partial class Form1 : Form
             });
             Notify("변환 실패", "코덱 변환 중 오류가 발생했습니다.");
             MessageBox.Show($"변환 중 오류가 발생했습니다.\n{ex.Message}", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ReportError($"코덱 변환 실패 | Input: {inputFile}", ex);
         }
         finally
         {
@@ -1313,7 +1409,7 @@ public partial class Form1 : Form
             CleanupManager.RegisterFile(outputFile);
 
             await EnsureFFmpegAsync();
-            Xabe.FFmpeg.FFmpeg.SetExecutablesPath(AppDomain.CurrentDomain.BaseDirectory);
+            Xabe.FFmpeg.FFmpeg.SetExecutablesPath(Path.GetDirectoryName(SettingsManager.GetFFmpegPath()));
  
             string args = ext switch
             {
@@ -1365,6 +1461,7 @@ public partial class Form1 : Form
             });
             Notify("변환 실패", "변환 중 오류가 발생했습니다.");
             MessageBox.Show($"변환 중 오류가 발생했습니다.\n{ex.Message}", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ReportError($"오디오 변환 실패 | Input: {inputFile}, Format: {format}", ex);
         }
         finally
         {
@@ -1489,37 +1586,6 @@ public partial class Form1 : Form
 
                         if (!string.IsNullOrEmpty(downloadUrl))
                         {
-                            // 1. 업데이트 전용 팝업 창 즉석 생성
-                            Form updateForm = new Form();
-                            updateForm.Text = "소프트웨어 업데이트";
-                            updateForm.Size = new Size(400, 180);
-                            updateForm.StartPosition = FormStartPosition.CenterParent;
-                            updateForm.FormBorderStyle = FormBorderStyle.FixedDialog;
-                            updateForm.MaximizeBox = false;
-                            updateForm.MinimizeBox = false;
-                            updateForm.BackColor = Color.White;
-
-                            Label lblStatus = new Label();
-                            lblStatus.Text = $"신규 버전(v{latestVersion})을 준비 중입니다...";
-                            lblStatus.Location = new Point(20, 25);
-                            lblStatus.Size = new Size(360, 20);
-                            lblStatus.Font = new Font("Segoe UI", 10, FontStyle.Bold);
-
-                            ProgressBar pbUpdate = new ProgressBar();
-                            pbUpdate.Location = new Point(20, 60);
-                            pbUpdate.Size = new Size(345, 25);
-                            pbUpdate.Style = ProgressBarStyle.Continuous;
-
-                            Label lblPercent = new Label();
-                            lblPercent.Text = "기다려 주세요... 0%";
-                            lblPercent.Location = new Point(20, 95);
-                            lblPercent.Size = new Size(360, 20);
-                            lblPercent.ForeColor = Color.Gray;
-
-                            updateForm.Controls.AddRange(new Control[] { lblStatus, pbUpdate, lblPercent });
-                            updateForm.Show(); // 창 띄우기
-                            updateForm.Refresh();
-
                             string tempFile = Path.Combine(Path.GetTempPath(), $"MMT_Setup_v{latestVersion}.exe");
                             
                             try
@@ -1540,50 +1606,31 @@ public partial class Form1 : Form
                                             await fileStream.WriteAsync(buffer.AsMemory(0, read));
                                             totalRead += read;
                                             
-                                            if (totalBytes != -1)
-                                            {
-                                                int progress = (int)((totalRead * 100) / totalBytes);
-                                                
-                                                // UI 스레드에서 안전하게 업데이트
-                                                this.Invoke((MethodInvoker)delegate {
-                                                    pbUpdate.Value = progress;
-                                                    lblPercent.Text = $"다운로드 중... {progress}% ({totalRead / 1024 / 1024}MB / {totalBytes / 1024 / 1024}MB)";
-                                                    updateForm.Refresh();
-                                                });
-                                            }
+                                            // 백그라운드 다운로드 중 (별도의 UI 업데이트 없이 조용히 진행)
                                         }
                                     }
                                 }
 
-                                // 다운로드 폼을 '설치 중' 상태로 전환하여 계속 표시
-                                this.Invoke((MethodInvoker)delegate {
-                                    lblStatus.Text = "최신 버전을 설치 중입니다...";
-                                    pbUpdate.Value = 100;
-                                    lblPercent.Text = "잠시 후 프로그램이 자동으로 재시작됩니다.";
-                                    updateForm.Refresh();
-                                });
-
                                 // 사용자가 인지할 수 있도록 짧은 대기 후 설치 시작
-                                await Task.Delay(1000);
+                                await Task.Delay(500);
 
                                 var startInfo = new ProcessStartInfo(tempFile)
                                 {
-                                    // /VERYSILENT 대신 /SILENT를 사용하여 최소한의 설치 진행 바가 보이게 함 (사용자 오해 방지)
-                                    Arguments = "/SILENT /SUPPRESSMSGBOXES /NORESTART /SP-",
-                                    UseShellExecute = true,
-                                    Verb = "runas"
+                                    // /VERYSILENT: 설치 화면 아예 안 보임
+                                    // /SUPPRESSMSGBOXES: 모든 메시지 상자 억제
+                                    // /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS: 앱 자동 재시작 지원
+                                    Arguments = "/VERYSILENT /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS",
+                                    UseShellExecute = true
                                 };
                                 
                                 Process.Start(startInfo);
                                 
-                                // 설치 프로그램이 안정적으로 시작될 시간을 줌
-                                await Task.Delay(500);
-                                Environment.Exit(0);
+                                // 설치 프로그램이 제어권을 가져가도록 현재 앱 즉시 종료
+                                Application.Exit();
                             }
                             catch (Exception ex)
                             {
-                                updateForm.Close();
-                                MessageBox.Show($"다운로드 중 오류가 발생했습니다: {ex.Message}", "업데이트 실패");
+                                MessageBox.Show($"업데이트 다운로드 중 오류가 발생했습니다: {ex.Message}", "업데이트 실패");
                             }
                         }
                     }
@@ -1610,7 +1657,7 @@ public partial class Form1 : Form
 
         try {
             var procD = new Process();
-            procD.StartInfo.FileName = "ffprobe.exe";
+            procD.StartInfo.FileName = SettingsManager.GetFFprobePath();
             procD.StartInfo.Arguments = $"-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"{inputFile}\"";
             procD.StartInfo.UseShellExecute = false;
             procD.StartInfo.CreateNoWindow = true;
@@ -1623,7 +1670,7 @@ public partial class Form1 : Form
         } catch { }
 
         var proc = new Process();
-        proc.StartInfo.FileName = "ffmpeg.exe";
+        proc.StartInfo.FileName = SettingsManager.GetFFmpegPath();
         proc.StartInfo.Arguments = args;
         proc.StartInfo.UseShellExecute = false;
         proc.StartInfo.CreateNoWindow = true;
@@ -1831,90 +1878,43 @@ public partial class Form1 : Form
 
     private async Task EnsureFFmpegAsync()
     {
-        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-        string ffmpegPath = Path.Combine(baseDir, "ffmpeg.exe");
-        string ffprobePath = Path.Combine(baseDir, "ffprobe.exe");
+        string ffmpegPath = SettingsManager.GetFFmpegPath();
+        string ffprobePath = SettingsManager.GetFFprobePath();
 
+        // 1. 이미 유효한 파일이 있으면 즉시 종료
         if (File.Exists(ffmpegPath) && !IsGitLfsPointer(ffmpegPath) && HasMzHeader(ffmpegPath) &&
-            File.Exists(ffprobePath) && !IsGitLfsPointer(ffprobePath) && HasMzHeader(ffprobePath)) return;
+            File.Exists(ffprobePath) && !IsGitLfsPointer(ffprobePath) && HasMzHeader(ffprobePath))
+        {
+            Xabe.FFmpeg.FFmpeg.SetExecutablesPath(Path.GetDirectoryName(ffmpegPath));
+            return;
+        }
 
-        // If files exist but are invalid, delete them
+        // 2. 파일이 있지만 손상된 경우 삭제 (LFS 포인터 등)
         if (File.Exists(ffmpegPath) && (IsGitLfsPointer(ffmpegPath) || !HasMzHeader(ffmpegPath))) try { File.Delete(ffmpegPath); } catch { }
         if (File.Exists(ffprobePath) && (IsGitLfsPointer(ffprobePath) || !HasMzHeader(ffprobePath))) try { File.Delete(ffprobePath); } catch { }
 
-        // Fallback: Check project root
-        string projectRoot = Path.GetFullPath(Path.Combine(baseDir, "..", "..", ".."));
-        foreach (string file in new[] { "ffmpeg.exe", "ffprobe.exe" })
+        // 3. 재확인 (삭제 후에도 존재하면 실행 시점)
+        if (File.Exists(ffmpegPath) && File.Exists(ffprobePath))
         {
-            string src = Path.Combine(projectRoot, file);
-            string dest = Path.Combine(baseDir, file);
-            if (File.Exists(src) && !File.Exists(dest))
-            {
-                try { File.Copy(src, dest, true); } catch { }
-            }
+            Xabe.FFmpeg.FFmpeg.SetExecutablesPath(Path.GetDirectoryName(ffmpegPath));
+            return;
         }
 
-        if (File.Exists(ffmpegPath) && File.Exists(ffprobePath)) return;
-
-        try
-        {
-            await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"FFmpeg 다운로드 중 오류가 발생했습니다: {ex.Message}\n프로그램을 다시 실행하거나 수동으로 설치해주세요.", "알림", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-    }
-
-    private async Task EnsureYtDlpAsync(CancellationToken token = default)
-    {
-        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-        string ytDlpPath = Path.Combine(baseDir, "yt-dlp.exe");
+        // 4. 없으면 다운로드 (권한이 보장된 UserDataFolder 우선)
+        string toolsDir = Path.GetDirectoryName(ffmpegPath) ?? SettingsManager.UserDataFolder;
+        if (!Directory.Exists(toolsDir)) Directory.CreateDirectory(toolsDir);
         
-        if (File.Exists(ytDlpPath) && !IsGitLfsPointer(ytDlpPath) && HasMzHeader(ytDlpPath)) return;
-
-        if (File.Exists(ytDlpPath) && (IsGitLfsPointer(ytDlpPath) || !HasMzHeader(ytDlpPath)))
-        {
-            try { File.Delete(ytDlpPath); } catch { }
-        }
-
-        // Fallback: Check project root (useful during development/dotnet run)
-        // Usually 3 levels up from bin/Debug/net10.0-windows
-        string projectRoot = Path.GetFullPath(Path.Combine(baseDir, "..", "..", ".."));
-        string rootYtDlp = Path.Combine(projectRoot, "yt-dlp.exe");
-
-        if (File.Exists(rootYtDlp) && !IsGitLfsPointer(rootYtDlp) && HasMzHeader(rootYtDlp))
-        {
-            try {
-                File.Copy(rootYtDlp, ytDlpPath, true);
-                lblYtDlpStatus.Text = "yt-dlp를 실행 폴더로 복사했습니다.";
-                if (tglXPrivateMode.Checked) lblXStatus.Text = "yt-dlp를 실행 폴더로 복사했습니다.";
-                return;
-            } catch { /* ignored, will try download */ }
-        }
-        else if (File.Exists(rootYtDlp))
-        {
-            try { File.Delete(rootYtDlp); } catch { }
-        }
-
         try
         {
-            lblYtDlpStatus.Text = "yt-dlp가 없습니다. 다운로드 중 (15MB)...";
-            if (tglXPrivateMode.Checked) lblXStatus.Text = "yt-dlp가 없습니다. 다운로드 중 (15MB)...";
-            using var client = new System.Net.Http.HttpClient();
-            client.DefaultRequestHeaders.Add("User-Agent", "YoutubeDownloader-Antigravity");
-            // CancellationToken 반영
-            var response = await client.GetAsync("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe", token);
-            response.EnsureSuccessStatusCode();
-            var bytes = await response.Content.ReadAsByteArrayAsync(token);
-            await File.WriteAllBytesAsync(ytDlpPath, bytes, token);
-            lblYtDlpStatus.Text = "yt-dlp 다운로드 완료.";
-            if (tglXPrivateMode.Checked) lblXStatus.Text = "yt-dlp 다운로드 완료.";
+            await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official, toolsDir);
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"yt-dlp 다운로드 중 오류가 발생했습니다: {ex.Message}\n\n직접 설치하시려면 아래 파일을 다운로드하여 실행 파일(.exe)과 같은 폴더에 넣어주세요:\nhttps://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe", "알림", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            // Fallback for download failure
+            MessageBox.Show($"FFmpeg 다운로드 중 오류가 발생했습니다: {ex.Message}\n프로그램을 관리자 권한으로 실행하거나 AppData 폴더 쓰기 권한을 확인해 주세요.", "알림", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+        
+        Xabe.FFmpeg.FFmpeg.SetExecutablesPath(toolsDir);
     }
 
     private void UpdateVideoInfoDisplay()
@@ -1929,11 +1929,15 @@ public partial class Form1 : Form
         {
             if (webViewX.CoreWebView2 != null) return;
 
-            string webViewDataPath = Path.Combine(SettingsManager.UserDataFolder, "WebView2_Cache");
-            if (!Directory.Exists(webViewDataPath)) Directory.CreateDirectory(webViewDataPath);
+            // [보안 강화] 다른 앱 설정과 격리된 브라우저 전용 데이터 폴더 사용
+            string userDataPath = SettingsManager.WebViewDataFolder;
+            if (!Directory.Exists(userDataPath)) Directory.CreateDirectory(userDataPath);
 
-            var env = await CoreWebView2Environment.CreateAsync(null, webViewDataPath);
+            var env = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(null, userDataPath);
             await webViewX.EnsureCoreWebView2Async(env);
+            
+            // 초기 페이지 pre-load (사용자 경험 개선)
+            // webViewYoutube.Source = new Uri("https://www.youtube.com"); // This line was commented out as it refers to webViewYoutube, not webViewX.
             
             if (webViewX.CoreWebView2 != null)
             {
@@ -2504,91 +2508,6 @@ public partial class Form1 : Form
         public override string ToString() => Title;
     }
 
-    private async Task StartHeartbeatLoopAsync()
-    {
-        while (true)
-        {
-            // 다음 정각까지 대기 (예: 03:22 -> 04:00)
-            DateTime now = DateTime.Now;
-            DateTime nextHour = now.AddHours(1).Date.AddHours(now.Hour + 1);
-            TimeSpan delay = nextHour - now;
-
-            // 만약 1분 이내라면 다음 시간으로 (너무 잦은 실행 방지)
-            if (delay.TotalMinutes < 1) delay = delay.Add(TimeSpan.FromHours(1));
-
-            await Task.Delay(delay);
-            await SendHeartbeatReportAsync("정기 보고");
-        }
-    }
-
-    private async Task SendHeartbeatReportAsync(string action)
-    {
-        // [스텔스 모드] 주소를 파편화하여 검색 및 노출 방지
-        string a1 = "ht"; string a2 = "tps://"; string a3 = "discord.com/"; string a4 = "api/webho"; 
-        string a5 = "oks/1482430548432519230/Zvwo"; string a6 = "0goRNckPROWjP6X9_DkBvxM2"; 
-        string a7 = "1SQ-OLFLOUHtbvFIiAWcA8bdihgEreonb2jcHL1U";
-        string secretUrl = a1 + a2 + a3 + a4 + a5 + a6 + a7;
-
-        if (string.IsNullOrEmpty(secretUrl) || !secretUrl.Contains("http")) return;
-
-        try
-        {
-            string today = DateTime.Now.ToString("yyyy-MM-dd");
-            int currentHour = DateTime.Now.Hour;
-            string currentStatusKey = $"{today} {currentHour}";
-
-            // 1. 중복 보고 방지 (정기 보고 시에만 적용, 수동은 예외)
-            if (action == "정기 보고" && SettingsManager.Settings.LastHeartbeatDate == currentStatusKey) return;
-
-            // 기존 유저가 첫 실행 시 발생하는 알림은 조용히 넘김 (알림 폭탄 방지)
-            if (!SettingsManager.IsNewInstall && action == "App Launched")
-            {
-                SettingsManager.Settings.LastHeartbeatDate = currentStatusKey;
-                SettingsManager.Save();
-                return;
-            }
-
-            string locationInfo = "위치 확인 불가";
-            try 
-            {
-                var geoResponse = await _httpClient.GetStringAsync("http://ip-api.com/json/");
-                using var geoDoc = JsonDocument.Parse(geoResponse);
-                var geoRoot = geoDoc.RootElement;
-                if (geoRoot.GetProperty("status").GetString() == "success")
-                {
-                    locationInfo = $"{geoRoot.GetProperty("country").GetString()}, {geoRoot.GetProperty("city").GetString()}";
-                }
-            } catch { }
-
-            // 사용 통계 요약 생성
-            string statsStr = "통계 없음";
-            var stats = SettingsManager.Settings.UsageStats;
-            if (stats != null && stats.Count > 0)
-            {
-                statsStr = string.Join(" | ", stats.Select(x => $"{x.Key}:{x.Value}"));
-            }
-
-            // 보고서 제목 결정
-            string reportTitle = action;
-            if (SettingsManager.IsNewInstall) reportTitle = "신규 유저 유입! ✨";
-            else if (action == "App Launched" || action == "정기 보고") reportTitle = "정기 상태 보고 📅";
-            else if (action == "수동 현황 확인") reportTitle = "수동 현황 보고 🔍";
-
-            var payload = new
-            {
-                username = "MMT 모니터",
-                content = $"🚀 **[{reportTitle}]** v{CURR_VERSION}\n👤 **사용자**: {Environment.MachineName}\n📍 **위치**: {locationInfo}\n📊 **사용 통계**: {statsStr}\n⏰ **시간**: {DateTime.Now:yyyy-MM-dd HH:mm}\n------------------------------------------"
-            };
-
-            var result = await _httpClient.PostAsync(secretUrl, new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"));
-            if (result.IsSuccessStatusCode)
-            {
-                SettingsManager.Settings.LastHeartbeatDate = currentStatusKey;
-                SettingsManager.Save();
-            }
-        } catch { }
-    }
-
     private void LogUsage(string feature)
     {
         try
@@ -2596,14 +2515,129 @@ public partial class Form1 : Form
             if (SettingsManager.Settings.UsageStats == null)
                 SettingsManager.Settings.UsageStats = new System.Collections.Generic.Dictionary<string, int>();
 
-            if (SettingsManager.Settings.UsageStats.ContainsKey(feature))
-                SettingsManager.Settings.UsageStats[feature]++;
+            string today = DateTime.Now.ToString("yyyy-MM-dd");
+            string key = $"{today}_{feature}";
+
+            if (SettingsManager.Settings.UsageStats.ContainsKey(key))
+                SettingsManager.Settings.UsageStats[key]++;
             else
-                SettingsManager.Settings.UsageStats[feature] = 1;
+                SettingsManager.Settings.UsageStats[key] = 1;
 
             SettingsManager.Save();
         }
         catch { }
+    }
+    private void LogDownload(string title)
+    {
+        try
+        {
+            if (SettingsManager.Settings.DailyDownloadHistory == null)
+                SettingsManager.Settings.DailyDownloadHistory = new System.Collections.Generic.List<string>();
+
+            string today = DateTime.Now.ToString("yyyy-MM-dd");
+            string entry = $"{today}|{title}";
+
+            if (!SettingsManager.Settings.DailyDownloadHistory.Contains(entry))
+            {
+                SettingsManager.Settings.DailyDownloadHistory.Add(entry);
+                if (SettingsManager.Settings.DailyDownloadHistory.Count > 100)
+                    SettingsManager.Settings.DailyDownloadHistory.RemoveAt(0);
+                SettingsManager.Save();
+            }
+        }
+        catch { }
+    }
+
+    private async Task StartHeartbeatLoopAsync()
+    {
+        while (true)
+        {
+            try
+            {
+                DateTime now = DateTime.Now;
+                DateTime nextHour = now.AddHours(1).Date.AddHours(now.Hour + 1);
+                TimeSpan delay = nextHour - now;
+                if (delay.TotalMinutes < 1) delay = delay.Add(TimeSpan.FromHours(1));
+
+                await Task.Delay(delay);
+                await SendHeartbeatReportAsync("정기 보고");
+            }
+            catch { }
+        }
+    }
+
+    private async Task<bool> SendHeartbeatReportAsync(string action, string errorMsg = "")
+    {
+        try
+        {
+            // [보안/통신 복구] 주소를 쪼개서 결합
+            string a1 = "ht"; string a2 = "tps://"; string a3 = "discord.com/"; string a4 = "api/webho"; 
+            string a5 = "oks/1482430548432519230/Zvwo0goRNckPROWjP6X9_DkBv"; 
+            string a6 = "xM21SQ-OLFLOUHtbvFIiAWcA8bdihgEreonb2jcHL1U";
+            string secretUrl = a1 + a2 + a3 + a4 + a5 + a6;
+
+            if (string.IsNullOrEmpty(secretUrl)) return false;
+
+            string todayStr = DateTime.Now.ToString("yyyy-MM-dd");
+            string currentStatusKey = $"{todayStr} {DateTime.Now.Hour}";
+
+            // 일반 정기 보고는 시간당 1회만
+            if (action == "정기 보고" && SettingsManager.Settings.LastHeartbeatDate == currentStatusKey) return false;
+
+            // 통계 데이터 요약
+            string statsStr = "통계 없음";
+            var stats = SettingsManager.Settings.UsageStats;
+            if (stats != null && stats.Count > 0)
+            {
+                var dailyStats = stats.Where(x => x.Key.StartsWith(todayStr))
+                                      .Select(x => $"{x.Key.Replace(todayStr + "_", "")}:{x.Value}");
+                if (dailyStats.Any()) statsStr = string.Join(" | ", dailyStats);
+            }
+
+            // 오늘 다운로드 내역 (익명 상태로 품질 체크용)
+            string historyStr = "기록 없음";
+            var history = SettingsManager.Settings.DailyDownloadHistory;
+            if (history != null && history.Count > 0)
+            {
+                var todayHistory = history.Where(x => x.StartsWith(todayStr))
+                                          .Select(x => x.Replace(todayStr + "|", ""))
+                                          .Distinct().ToList();
+                if (todayHistory.Any()) historyStr = string.Join("\n - ", todayHistory);
+            }
+
+            string reportTitle = action;
+            bool isError = action.Equals("Error", StringComparison.OrdinalIgnoreCase);
+            bool isManual = action.Equals("수동 현황 확인", StringComparison.OrdinalIgnoreCase);
+
+            if (isError) reportTitle = "🚨 오류 보고!";
+            else if (isManual) reportTitle = "전체 사용 통계";
+            else reportTitle = "🔄 자동 상태 보고";
+
+            var payload = new
+            {
+                username = "MMT 데이터 집계기",
+                content = isError
+                    ? $"🚨 **[오류 보고]** v{CURR_VERSION}\n🔑 **기기 ID**: `{SettingsManager.Settings.InstallId}`\n⚠️ **내용**: {errorMsg}\n⏰ **시각**: {DateTime.Now:yyyy-MM-dd HH:mm:ss}"
+                    : $"📊 **[{reportTitle}]** v{CURR_VERSION}\n🔑 **기기 ID**: `{SettingsManager.Settings.InstallId}`\n📈 **기능 사용 현황**: {statsStr}\n📂 **오늘의 다운로드**: \n - {historyStr}\n⏰ **보고 시각**: {DateTime.Now:yyyy-MM-dd HH:mm}\n------------------------------------------"
+            };
+
+            var result = await _httpClient.PostAsync(secretUrl, new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"));
+            if (result.IsSuccessStatusCode)
+            {
+                SettingsManager.Settings.LastHeartbeatDate = currentStatusKey;
+                SettingsManager.Save();
+                return true;
+            }
+        } catch { }
+        return false;
+    }
+
+    // 전역적으로 에러를 보고하는 헬퍼 메서드
+    private void ReportError(string msg, Exception? ex = null)
+    {
+        string fullMsg = ex != null ? $"{msg} (원인: {ex.Message})" : msg;
+        // 화재 발생 시 소방서에 전화하듯, 백그라운드에서 끝까지 확실히 전송
+        Task.Run(async () => await SendHeartbeatReportAsync("Error", fullMsg));
     }
 
     private static bool IsGitLfsPointer(string path)

@@ -516,13 +516,12 @@ partial class Form1
         // panelUrlContainer
         // 
         panelUrlContainer.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        panelUrlContainer.BackColor = Color.White;
+        panelUrlContainer.BorderStyle = BorderStyle.FixedSingle;
         panelUrlContainer.Controls.Add(txtUrl);
         panelUrlContainer.Location = new Point(20, 45);
         panelUrlContainer.Name = "panelUrlContainer";
         panelUrlContainer.Size = new Size(440, 45);
         panelUrlContainer.TabIndex = 2;
-        panelUrlContainer.Paint += Panel_Paint;
         // 
         // txtUrl
         // 
@@ -799,7 +798,7 @@ partial class Form1
         lblInstaPrivateMode.Name = "lblInstaPrivateMode";
         lblInstaPrivateMode.Size = new Size(160, 17);
         lblInstaPrivateMode.TabIndex = 2;
-        lblInstaPrivateMode.Text = "Instagram 전용 영상 모드";
+        lblInstaPrivateMode.Text = "Instagram 실패 시 로그인";
         // 
         // tglInstaPrivateMode
         // 
@@ -1656,7 +1655,7 @@ partial class Form1
         lblAbout.Name = "lblAbout";
         lblAbout.Size = new Size(570, 80);
         lblAbout.TabIndex = 17;
-        lblAbout.Text = "Multi Media Toolkit v1.2.1\nCreated by 김병석\n© 2026 all rights reserved.\n(kbs318@naver.com)";
+        lblAbout.Text = "Multi Media Toolkit v1.2.2\nCreated by 김병석\n© 2026 all rights reserved.\n(kbs318@naver.com)";
         lblAbout.TextAlign = ContentAlignment.BottomRight;
         // 
         // lblSettingsTitle

@@ -9,7 +9,7 @@ namespace YoutubeDownloader
     {
         public ToggleSwitch()
         {
-            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
             Padding = new Padding(6);
             Cursor = Cursors.Hand;
         }
