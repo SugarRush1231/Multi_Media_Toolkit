@@ -4,6 +4,8 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace YoutubeDownloader
 {
@@ -11,35 +13,92 @@ namespace YoutubeDownloader
     {
         public event Action<double>? OnProgressChanged;
         public event Action<string>? OnDownloadCompleted;
-
+        public Func<string, Task<string>>? WebViewResolver { get; set; }
+        public bool DownloadSubtitles { get; set; }
+        public string SubtitleLanguages { get; set; } = "ko.*,ko,en.*,en";
+        public string FormatSelector { get; set; } = "";
+        public string OutputNameTemplate { get; set; } = "%(title)s";
+        public string PreferredTitle { get; set; } = "";
+        public bool LastSubtitleDownloaded { get; private set; }
         public async Task<string> DownloadVideoAsync(string videoUrl, string saveDirectory, string browser = "none", System.Threading.CancellationToken token = default, string cookieFile = "", Dictionary<string, string>? headers = null)
         {
+            LastSubtitleDownloaded = false;
+
             // 1. URL 정화
             videoUrl = videoUrl.Trim().Trim('\"', '\'', ' ');
             if (videoUrl.StartsWith("yt-dlp", StringComparison.OrdinalIgnoreCase)) videoUrl = videoUrl.Remove(0, 6).Trim();
+            videoUrl = NormalizeYouTubeSingleVideoUrl(videoUrl);
+
+            if (videoUrl.StartsWith("blob:", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new Exception("blob: 주소는 브라우저 내부용 가상 주소이므로 다운로드할 수 없습니다.\nF12(개발자 도구) -> 네트워크 탭에서 'm3u8' 또는 'manifest'를 검색하여 실제 주소를 찾아 입력해주세요.");
+            }
+
+            // [사용자 요청] m3u8 URL이 직접 입력된 경우 ffmpeg로 다이렉트 다운로드 (yt-dlp 우회)
+            if (IsAnilifeManifestUrl(videoUrl))
+            {
+                return await DownloadAnilifeSegmentsAsync(videoUrl, saveDirectory, token, GetPreferredFileName("Anilife_Video"));
+            }
+
+            if (videoUrl.Contains(".m3u8") || videoUrl.Contains("api.gcdn.app"))
+            {
+                return await DownloadM3u8WithFFmpegAsync(videoUrl, saveDirectory, browser, token, headers, GetPreferredFileName(""));
+            }
 
             // 2. [치지직 클립 리졸버 및 SOOP 리졸버]
             string customFileName = "";
+            bool useDirectHlsDownload = false;
+            bool useAnilifeSegmentDownload = false;
+            string subtitleUrl = "";
             if (videoUrl.Contains("chzzk.naver.com/clips/"))
             {
-                var resolved = await ResolveChzzkClipAsync(videoUrl);
+                (string Url, string Title)? resolved = null;
+                try { resolved = await ResolveChzzkClipAsync(videoUrl); } catch { }
                 if (resolved != null)
                 {
                     videoUrl = resolved.Value.Url;
                     customFileName = resolved.Value.Title;
+                }
+                else if (WebViewResolver != null)
+                {
+                    string m3u8 = await WebViewResolver(videoUrl);
+                    if (!string.IsNullOrEmpty(m3u8))
+                    {
+                        videoUrl = m3u8;
+                        customFileName = GetPreferredFileName("Chzzk_Clip");
+                        useDirectHlsDownload = true;
+                    }
+                    else
+                    {
+                        throw new Exception("치지직 클립 정보를 가져오는 데 실패했습니다.\n로그인 브라우저에서 영상 페이지를 연 뒤 다시 시도해주세요.");
+                    }
                 }
                 else
                 {
                     throw new Exception("치지직 클립 정보를 가져오는 데 실패했습니다.\n(주소를 다시 확인하거나 잠시 후 시도해주세요.)");
                 }
             }
-            else if (videoUrl.Contains("vod.sooplive.co.kr/player/"))
+            else if (videoUrl.Contains("vod.sooplive.") && videoUrl.Contains("/player/"))
             {
                 var resolved = await ResolveSoopCatchAsync(videoUrl);
                 if (resolved != null)
                 {
                     videoUrl = resolved.Value.Url;
                     customFileName = resolved.Value.Title;
+                }
+                else if (WebViewResolver != null)
+                {
+                    string m3u8 = await WebViewResolver(videoUrl);
+                    if (!string.IsNullOrEmpty(m3u8))
+                    {
+                        videoUrl = m3u8;
+                        customFileName = GetPreferredFileName("SOOP_Video");
+                        useDirectHlsDownload = true;
+                    }
+                    else
+                    {
+                        throw new Exception("SOOP 영상 스트림을 자동으로 찾지 못했습니다.\n로그인 브라우저에서 영상 페이지를 연 뒤 다시 시도해주세요.");
+                    }
                 }
             }
             else if (videoUrl.Contains("tv.naver.com/"))
@@ -50,6 +109,96 @@ namespace YoutubeDownloader
                     videoUrl = resolved.Value.Url;
                     customFileName = resolved.Value.Title;
                 }
+            }
+            else if (videoUrl.Contains("anilife.app/watch"))
+            {
+                var resolved = await ResolveAnilifAsync(videoUrl);
+                if (resolved != null)
+                {
+                    videoUrl = resolved.Value.Url;
+                    customFileName = resolved.Value.Title;
+                    useDirectHlsDownload = true;
+                    useAnilifeSegmentDownload = true;
+                }
+                else if (WebViewResolver != null)
+                {
+                    string m3u8 = await WebViewResolver(videoUrl);
+                    if (!string.IsNullOrEmpty(m3u8))
+                    {
+                        videoUrl = m3u8;
+                        customFileName = GetPreferredFileName("Anilife_Video");
+                        useDirectHlsDownload = true;
+                        useAnilifeSegmentDownload = true;
+                    }
+                    else
+                    {
+                        throw new Exception("애니라이프 영상 정보를 자동으로 가져오는 데 실패했습니다.\n잠시 후 다시 시도해주세요.");
+                    }
+                }
+                else
+                {
+                    var resolvedAgain = await ResolveAnilifAsync(videoUrl);
+                    if (resolvedAgain != null)
+                    {
+                        videoUrl = resolvedAgain.Value.Url;
+                        customFileName = resolvedAgain.Value.Title;
+                        useDirectHlsDownload = true;
+                        useAnilifeSegmentDownload = true;
+                    }
+                    else
+                    {
+                        throw new Exception("애니라이프 영상 정보를 자동으로 가져오는 데 실패했습니다.\n잠시 후 다시 시도해주세요.");
+                    }
+                }
+            }
+            else if (IsLinkkfWatchUrl(videoUrl))
+            {
+                var resolved = await ResolveLinkkfAsync(videoUrl);
+                if (resolved != null)
+                {
+                    videoUrl = resolved.Value.Url;
+                    customFileName = resolved.Value.Title;
+                    subtitleUrl = resolved.Value.SubtitleUrl;
+                    useDirectHlsDownload = true;
+                }
+                else if (WebViewResolver != null)
+                {
+                    string m3u8 = await WebViewResolver(videoUrl);
+                    if (!string.IsNullOrEmpty(m3u8))
+                    {
+                        videoUrl = m3u8;
+                        customFileName = GetPreferredFileName("Linkkf_Video");
+                        useDirectHlsDownload = true;
+                    }
+                    else
+                    {
+                        throw new Exception("Linkkf 영상 정보를 자동으로 가져오는 데 실패했습니다.\n잠시 후 다시 시도해주세요.");
+                    }
+                }
+                else
+                {
+                    throw new Exception("Linkkf 영상 정보를 자동으로 가져오는 데 실패했습니다.\n잠시 후 다시 시도해주세요.");
+                }
+            }
+
+            if (useDirectHlsDownload && (videoUrl.Contains(".m3u8") || videoUrl.Contains("api.gcdn.app")))
+            {
+                string downloadedPath;
+                if (useAnilifeSegmentDownload || IsAnilifeManifestUrl(videoUrl))
+                {
+                    downloadedPath = await DownloadAnilifeSegmentsAsync(videoUrl, saveDirectory, token, customFileName);
+                }
+                else
+                {
+                    downloadedPath = await DownloadM3u8WithFFmpegAsync(videoUrl, saveDirectory, browser, token, headers, customFileName);
+                }
+
+                if (DownloadSubtitles && !string.IsNullOrWhiteSpace(subtitleUrl))
+                {
+                    LastSubtitleDownloaded = !string.IsNullOrWhiteSpace(await DownloadSubtitleSidecarAsync(subtitleUrl, downloadedPath, token));
+                }
+
+                return downloadedPath;
             }
 
             string ytDlpPath = SettingsManager.GetYtDlpPath();
@@ -69,9 +218,10 @@ namespace YoutubeDownloader
             }
             
             // 파일명이 미리 결정되었다면 사용
+            string metadataTemplate = string.IsNullOrWhiteSpace(OutputNameTemplate) ? "%(title)s" : OutputNameTemplate;
             string outputTemplate = !string.IsNullOrEmpty(customFileName) 
                 ? Path.Combine(saveDirectory, $"{customFileName}.%(ext)s")
-                : Path.Combine(saveDirectory, "%(title)s.%(ext)s");
+                : Path.Combine(saveDirectory, $"{metadataTemplate}.%(ext)s");
 
             // 일반 주소(제목 자동 추출)의 경우 yt-dlp 자체의 중복 방지 기능 활용은 어려우므로 
             // 일단 --no-overwrites 를 넣으면 파일이 있을 때 건너뛰게 됩니다.
@@ -89,15 +239,20 @@ namespace YoutubeDownloader
 
             // 네이버 등 외부 사이트는 User-Agent와 Referer가 중요합니다.
             string userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-            
-            string arguments = $"--newline --encoding utf-8 --user-agent \"{userAgent}\" --no-warnings ";
+            bool isYouTubeDownload = IsYouTubeUrl(videoUrl);
+
+            string arguments = $"{(isYouTubeDownload ? "--ignore-config " : "")}--newline --encoding utf-8 --user-agent \"{userAgent}\" --no-warnings ";
+            if (isYouTubeDownload) arguments += "--no-playlist ";
             
             // 사이트별로 적절한 Referer 설정
             string referer = "";
             if (videoUrl.Contains("chzzk.naver.com")) referer = "https://chzzk.naver.com/";
+            else if (videoUrl.Contains("pstatic.net")) referer = "https://chzzk.naver.com/";
             else if (videoUrl.Contains("naver.com")) referer = "https://tv.naver.com/";
             else if (videoUrl.Contains("x.com") || videoUrl.Contains("twitter.com")) referer = "https://x.com/";
             else if (videoUrl.Contains("instagram.com")) referer = "https://www.instagram.com/";
+            else if (videoUrl.Contains("gcdn.app") || videoUrl.Contains("anilife.app")) referer = "https://anilife.app/";
+            else if (videoUrl.Contains("linkkf.drewpx.xyz")) referer = "https://linkkf.drewpx.xyz/";
 
             if (!string.IsNullOrEmpty(referer)) arguments += $"--referer \"{referer}\" ";
             
@@ -109,6 +264,15 @@ namespace YoutubeDownloader
             else if (!string.IsNullOrEmpty(browser) && browser != "none")
             {
                 arguments += $"--cookies-from-browser {browser.ToLower()} ";
+            }
+
+            if (isYouTubeDownload && (string.IsNullOrEmpty(cookieFile) || !File.Exists(cookieFile)) && (string.IsNullOrEmpty(browser) || browser == "none"))
+            {
+                string webViewProfilePath = Path.Combine(SettingsManager.WebViewDataFolder, "EBWebView");
+                if (Directory.Exists(webViewProfilePath))
+                {
+                    arguments += $"--cookies-from-browser \"chromium:{webViewProfilePath}\" ";
+                }
             }
 
             // 추가 헤더 설정 (Twitter 비공개 계정 등 우회용)
@@ -123,80 +287,207 @@ namespace YoutubeDownloader
                 }
             }
             
-
-
-            arguments += $"--ffmpeg-location \"{ffmpegDir}\" --merge-output-format mp4 -o \"{outputTemplate}\" \"{videoUrl}\"";
-
-            string errorOutput = string.Empty;
-            string downloadedFilePath = string.Empty;
-
-            ProcessStartInfo psi = new ProcessStartInfo
+            string commonArguments = arguments;
+            string formatArguments = "";
+            if (FormatSelector.Equals("best_mp3", StringComparison.OrdinalIgnoreCase))
             {
-                FileName = ytDlpPath,
-                Arguments = arguments,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardOutputEncoding = System.Text.Encoding.UTF8,
-                StandardErrorEncoding = System.Text.Encoding.UTF8
-            };
-
-            using (Process process = new Process())
+                formatArguments = "-x --audio-format mp3 ";
+            }
+            else if (!string.IsNullOrWhiteSpace(FormatSelector))
             {
-                process.StartInfo = psi;
-                Regex progressRegex = new Regex(@"\[download\]\s+(?<percent>\d+(\.\d+)?)%");
-                Regex mergeRegex = new Regex(@"(Merging formats into|Destination:)\s+""?(?<filepath>.+\.mp4)""?");
+                formatArguments = $"-f \"{FormatSelector}\" ";
+            }
 
-                process.OutputDataReceived += (sender, e) =>
+            if (FormatSelector.Equals("best_mp3", StringComparison.OrdinalIgnoreCase))
+            {
+                arguments += $"{formatArguments}--windows-filenames --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
+            }
+            else
+            {
+                arguments += $"{formatArguments}--windows-filenames --ffmpeg-location \"{ffmpegDir}\" --merge-output-format mp4 -o \"{outputTemplate}\" \"{videoUrl}\"";
+            }
+
+            var result = await RunYtDlpProcessAsync(arguments);
+
+            if (!result.Success && isYouTubeDownload && IsRequestedFormatUnavailable(result.ErrorOutput))
+            {
+                foreach (string fallbackArguments in BuildYouTubeFormatFallbackArguments(commonArguments, ffmpegDir, outputTemplate, videoUrl))
                 {
-                    if (string.IsNullOrEmpty(e.Data)) return;
-                    Match m = progressRegex.Match(e.Data);
-                    if (m.Success && double.TryParse(m.Groups["percent"].Value, out double p)) OnProgressChanged?.Invoke(p);
-                    
-                    Match fm = mergeRegex.Match(e.Data);
-                    if (fm.Success) downloadedFilePath = fm.Groups["filepath"].Value;
-                };
-
-                process.ErrorDataReceived += (sender, e) => { if (!string.IsNullOrEmpty(e.Data)) errorOutput += e.Data + Environment.NewLine; };
-
-                try
-                {
-                    process.Start();
-                    process.BeginOutputReadLine();
-                    process.BeginErrorReadLine();
-
-                    using (token.Register(() => { try { if (!process.HasExited) process.Kill(true); } catch { } }))
+                    var fallbackResult = await RunYtDlpProcessAsync(fallbackArguments);
+                    if (fallbackResult.Success)
                     {
-                        await process.WaitForExitAsync();
+                        result = fallbackResult;
+                        break;
                     }
 
-                    if (process.ExitCode == 0)
-                    {
-                        OnDownloadCompleted?.Invoke(downloadedFilePath);
-                        return downloadedFilePath;
-                    }
-                    else
-                    {
-                        token.ThrowIfCancellationRequested();
+                    result = fallbackResult;
+                }
 
-                        string msg = "다운로드 실패";
-                        if (errorOutput.Contains("400") || errorOutput.Contains("Bad Request"))
-                        {
-                            msg = "다운로드 실패 (HTTP 400: Bad Request)\n\n" +
-                                  "💡 알림: 치지직 성인/제한 영상은 현재 다운로드가 어렵습니다.";
-                        }
-                        else if (errorOutput.Contains("Unsupported URL", StringComparison.OrdinalIgnoreCase))
-                        {
-                            msg = "다운로드 실패: 현재 이 주소 형식을 지원하지 않습니다.";
-                        }
-                        
-                        msg += $"\n\n[오류 설명]:\n{errorOutput}";
-                        throw new Exception(msg);
+                if (!result.Success)
+                {
+                    var formatListResult = await RunYtDlpProcessAsync($"{commonArguments}-F \"{videoUrl}\"");
+                    string formatList = formatListResult.StandardOutput.Trim();
+                    if (!string.IsNullOrWhiteSpace(formatList))
+                    {
+                        result = (false, result.ErrorOutput + Environment.NewLine + "[Available formats]" + Environment.NewLine + formatList, result.DownloadedFilePath, result.StandardOutput);
                     }
                 }
-                catch (OperationCanceledException) { throw; }
             }
+
+            if (result.Success)
+            {
+                if (DownloadSubtitles)
+                {
+                    LastSubtitleDownloaded = await TryDownloadYtDlpSubtitlesAsync(ytDlpPath, commonArguments, ffmpegDir, outputTemplate, videoUrl, token);
+                }
+                OnDownloadCompleted?.Invoke(result.DownloadedFilePath);
+                return result.DownloadedFilePath;
+            }
+
+            token.ThrowIfCancellationRequested();
+
+            string msg = "다운로드 실패";
+            if (result.ErrorOutput.Contains("400") || result.ErrorOutput.Contains("Bad Request"))
+            {
+                msg = "다운로드 실패 (HTTP 400: Bad Request)\n\n" +
+                      "💡 알림: 치지직 성인/제한 영상은 현재 다운로드가 어렵습니다.";
+            }
+            else if (result.ErrorOutput.Contains("Unsupported URL", StringComparison.OrdinalIgnoreCase))
+            {
+                msg = "다운로드 실패: 현재 이 주소 형식을 지원하지 않습니다.";
+            }
+
+            msg += $"\n\n[오류 설명]:\n{result.ErrorOutput}";
+            throw new Exception(msg);
+
+            async Task<(bool Success, string ErrorOutput, string DownloadedFilePath, string StandardOutput)> RunYtDlpProcessAsync(string runArguments)
+            {
+                string errorOutput = string.Empty;
+                string standardOutput = string.Empty;
+                string downloadedFilePath = string.Empty;
+
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = ytDlpPath,
+                    Arguments = runArguments,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    StandardOutputEncoding = System.Text.Encoding.UTF8,
+                    StandardErrorEncoding = System.Text.Encoding.UTF8
+                };
+
+                using (Process process = new Process())
+                {
+                    process.StartInfo = psi;
+                    Regex progressRegex = new Regex(@"\[download\]\s+(?<percent>\d+(\.\d+)?)%");
+                    Regex outputRegex = new Regex(@"(?:Merging formats into|Destination:)\s+""?(?<filepath>.+?)""?$");
+
+                    process.OutputDataReceived += (sender, e) =>
+                    {
+                        if (string.IsNullOrEmpty(e.Data)) return;
+                        standardOutput += e.Data + Environment.NewLine;
+                        Match m = progressRegex.Match(e.Data);
+                        if (m.Success && double.TryParse(m.Groups["percent"].Value, out double p)) OnProgressChanged?.Invoke(p);
+
+                        Match fm = outputRegex.Match(e.Data);
+                        if (fm.Success)
+                        {
+                            downloadedFilePath = fm.Groups["filepath"].Value.Trim().Trim('"');
+                        }
+                    };
+
+                    process.ErrorDataReceived += (sender, e) => { if (!string.IsNullOrEmpty(e.Data)) errorOutput += e.Data + Environment.NewLine; };
+
+                    try
+                    {
+                        process.Start();
+                        process.BeginOutputReadLine();
+                        process.BeginErrorReadLine();
+
+                        using (token.Register(() => { try { if (!process.HasExited) process.Kill(true); } catch { } }))
+                        {
+                            await process.WaitForExitAsync();
+                        }
+
+                        token.ThrowIfCancellationRequested();
+                        return (process.ExitCode == 0, errorOutput, downloadedFilePath, standardOutput);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                }
+            }
+        }
+
+        private static IEnumerable<string> BuildYouTubeFormatFallbackArguments(string commonArguments, string ffmpegDir, string outputTemplate, string videoUrl)
+        {
+            yield return $"{commonArguments}-f \"bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*+ba/b[ext=mp4]/b\" --merge-output-format mp4 --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
+            yield return $"{commonArguments}-f \"bestvideo*+bestaudio/best\" --merge-output-format mp4 --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
+            yield return $"{commonArguments}-f \"best\" --no-check-formats --hls-use-mpegts --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
+            yield return $"{commonArguments}--extractor-args \"youtube:player_client=web,web_safari,android,ios\" -f \"bestvideo*+bestaudio/best\" --merge-output-format mp4 --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
+            yield return $"{commonArguments}-f \"worst/best\" --no-check-formats --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
+        }
+
+        private static bool IsYouTubeUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url)) return false;
+            return url.Contains("youtube.com", StringComparison.OrdinalIgnoreCase)
+                || url.Contains("youtu.be", StringComparison.OrdinalIgnoreCase)
+                || url.Contains("youtube-nocookie.com", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string NormalizeYouTubeSingleVideoUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url)) return url;
+            string input = url.Trim();
+            if (!Uri.TryCreate(input, UriKind.Absolute, out var uri)) return input;
+
+            string host = uri.Host.ToLowerInvariant();
+            bool isYouTubeHost = host == "youtube.com"
+                || host.EndsWith(".youtube.com")
+                || host == "youtube-nocookie.com"
+                || host.EndsWith(".youtube-nocookie.com");
+
+            if (host == "youtu.be")
+            {
+                string videoId = uri.AbsolutePath.Trim('/');
+                if (string.IsNullOrWhiteSpace(videoId)) return input;
+                return new UriBuilder(uri.Scheme, uri.Host, uri.Port, "/" + videoId) { Query = "" }.Uri.ToString();
+            }
+
+            if (!isYouTubeHost || !uri.AbsolutePath.Equals("/watch", StringComparison.OrdinalIgnoreCase)) return input;
+
+            string videoIdFromQuery = GetQueryParameterValue(uri.Query, "v");
+            if (string.IsNullOrWhiteSpace(videoIdFromQuery)) return input;
+
+            return new UriBuilder(uri.Scheme, uri.Host, uri.Port, uri.AbsolutePath)
+            {
+                Query = "v=" + Uri.EscapeDataString(videoIdFromQuery)
+            }.Uri.ToString();
+        }
+
+        private static string GetQueryParameterValue(string query, string key)
+        {
+            if (string.IsNullOrWhiteSpace(query)) return "";
+            string trimmed = query.TrimStart('?');
+            foreach (string part in trimmed.Split('&', StringSplitOptions.RemoveEmptyEntries))
+            {
+                string[] pair = part.Split('=', 2);
+                string name = Uri.UnescapeDataString(pair[0].Replace("+", " "));
+                if (!name.Equals(key, StringComparison.OrdinalIgnoreCase)) continue;
+
+                return pair.Length > 1 ? Uri.UnescapeDataString(pair[1].Replace("+", " ")) : "";
+            }
+
+            return "";
+        }
+
+        private static bool IsRequestedFormatUnavailable(string errorOutput)
+        {
+            return !string.IsNullOrWhiteSpace(errorOutput)
+                && (errorOutput.Contains("Requested format is not available", StringComparison.OrdinalIgnoreCase)
+                    || errorOutput.Contains("Use --list-formats", StringComparison.OrdinalIgnoreCase)
+                    || errorOutput.Contains("No video formats", StringComparison.OrdinalIgnoreCase));
         }
 
         private async Task<(string Url, string Title)?> ResolveChzzkClipAsync(string originalUrl)
@@ -421,6 +712,1098 @@ namespace YoutubeDownloader
                 Debug.WriteLine($"[NaverTvResolver] 오류: {ex.Message}");
                 return null;
             }
+        }
+
+        private async Task<(string Url, string Title, string SubtitleUrl)?> ResolveLinkkfAsync(string originalUrl)
+        {
+            try
+            {
+                using var client = new System.Net.Http.HttpClient();
+                client.Timeout = TimeSpan.FromSeconds(20);
+                client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+                client.DefaultRequestHeaders.TryAddWithoutValidation("Referer", "https://linkkf.drewpx.xyz/");
+
+                string html = await client.GetStringAsync(originalUrl);
+                string rawTitle = "Linkkf_Video";
+                var titleMatch = Regex.Match(html, @"<title>\s*(.*?)\s*</title>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+                if (titleMatch.Success)
+                {
+                    rawTitle = System.Net.WebUtility.HtmlDecode(titleMatch.Groups[1].Value).Trim();
+                    int suffixIndex = rawTitle.IndexOf(" - Anime - ", StringComparison.OrdinalIgnoreCase);
+                    if (suffixIndex > 0) rawTitle = rawTitle.Substring(0, suffixIndex).Trim();
+                }
+
+                string playerUrl = "";
+                var actualUrlMatch = Regex.Match(html, @"""actual_url""\s*:\s*""([^""]+)""", RegexOptions.IgnoreCase);
+                if (actualUrlMatch.Success)
+                {
+                    playerUrl = DecodeLinkkfUrl(actualUrlMatch.Groups[1].Value);
+                }
+
+                if (string.IsNullOrEmpty(playerUrl))
+                {
+                    var dataUrlMatch = Regex.Match(html, @"data-url\s*=\s*[""']([^""']+)[""']", RegexOptions.IgnoreCase);
+                    if (dataUrlMatch.Success) playerUrl = DecodeLinkkfUrl(dataUrlMatch.Groups[1].Value);
+                }
+
+                if (string.IsNullOrEmpty(playerUrl)) return null;
+                if (Uri.TryCreate(new Uri(originalUrl), playerUrl, out var playerUri))
+                {
+                    playerUrl = playerUri.ToString();
+                }
+
+                var playerReq = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, playerUrl);
+                playerReq.Headers.TryAddWithoutValidation("Referer", originalUrl);
+                playerReq.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+                var playerRes = await client.SendAsync(playerReq);
+                if (!playerRes.IsSuccessStatusCode) return null;
+
+                string playerHtml = await playerRes.Content.ReadAsStringAsync();
+                var m3u8Match = Regex.Match(playerHtml, @"videoUrl\s*:\s*[""']([^""']+?\.m3u8[^""']*)[""']", RegexOptions.IgnoreCase);
+                if (!m3u8Match.Success)
+                {
+                    m3u8Match = Regex.Match(playerHtml, @"[""']([^""']+?\.m3u8[^""']*)[""']", RegexOptions.IgnoreCase);
+                }
+
+                if (!m3u8Match.Success) return null;
+
+                string m3u8Url = DecodeLinkkfUrl(m3u8Match.Groups[1].Value);
+                if (Uri.TryCreate(new Uri(playerUrl), m3u8Url, out var m3u8Uri))
+                {
+                    m3u8Url = m3u8Uri.ToString();
+                }
+
+                string subtitleUrl = "";
+                var subtitleMatch = Regex.Match(playerHtml, @"""file""\s*:\s*""([^""]+?\.vtt[^""]*)""", RegexOptions.IgnoreCase);
+                if (subtitleMatch.Success)
+                {
+                    subtitleUrl = DecodeLinkkfUrl(subtitleMatch.Groups[1].Value);
+                    if (Uri.TryCreate(new Uri(playerUrl), subtitleUrl, out var subtitleUri))
+                    {
+                        subtitleUrl = subtitleUri.ToString();
+                    }
+                }
+
+                string safeTitle = string.Join("_", rawTitle.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries)).Trim();
+                if (string.IsNullOrWhiteSpace(safeTitle)) safeTitle = "Linkkf_Video";
+                return (m3u8Url, safeTitle, subtitleUrl);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[LinkkfResolver] error: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static string DecodeLinkkfUrl(string value)
+        {
+            return System.Net.WebUtility.HtmlDecode(value)
+                .Replace("\\/", "/")
+                .Replace("\\u0026", "&")
+                .Replace("\\u003d", "=")
+                .Trim();
+        }
+
+        private async Task<string?> DownloadSubtitleSidecarAsync(string subtitleUrl, string videoFilePath, System.Threading.CancellationToken token)
+        {
+            try
+            {
+                string subtitlePath = Path.ChangeExtension(videoFilePath, ".vtt");
+                string directory = Path.GetDirectoryName(subtitlePath) ?? "";
+                string fileName = Path.GetFileNameWithoutExtension(subtitlePath);
+                int counter = 1;
+
+                while (File.Exists(subtitlePath))
+                {
+                    subtitlePath = Path.Combine(directory, $"{fileName}_{counter++}.vtt");
+                }
+
+                using var client = new System.Net.Http.HttpClient();
+                client.Timeout = TimeSpan.FromSeconds(30);
+                client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+                client.DefaultRequestHeaders.TryAddWithoutValidation("Referer", "https://playv2.sub3.top/");
+
+                byte[] bytes = await client.GetByteArrayAsync(subtitleUrl, token);
+                await File.WriteAllBytesAsync(subtitlePath, bytes, token);
+                return subtitlePath;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[SubtitleDownloader] error: {ex.Message}");
+                return null;
+            }
+        }
+
+        private async Task<bool> TryDownloadYtDlpSubtitlesAsync(string ytDlpPath, string commonArguments, string ffmpegDir, string outputTemplate, string videoUrl, System.Threading.CancellationToken token)
+        {
+            string subLanguages = string.IsNullOrWhiteSpace(SubtitleLanguages) ? "ko.*,ko,en.*,en" : SubtitleLanguages;
+            string arguments = $"{commonArguments}--skip-download --write-subs --write-auto-subs --sub-langs \"{subLanguages}\" --convert-subs srt --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
+            string errorOutput = "";
+            string standardOutput = "";
+            DateTime startedAtUtc = DateTime.UtcNow.AddSeconds(-2);
+
+            ProcessStartInfo psi = new ProcessStartInfo
+            {
+                FileName = ytDlpPath,
+                Arguments = arguments,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8
+            };
+
+            try
+            {
+                using Process process = new Process();
+                process.StartInfo = psi;
+                process.ErrorDataReceived += (sender, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data)) errorOutput += e.Data + Environment.NewLine;
+                };
+                process.OutputDataReceived += (sender, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data)) standardOutput += e.Data + Environment.NewLine;
+                };
+
+                process.Start();
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                using (token.Register(() => { try { if (!process.HasExited) process.Kill(true); } catch { } }))
+                {
+                    await process.WaitForExitAsync();
+                }
+
+                token.ThrowIfCancellationRequested();
+                if (process.ExitCode != 0)
+                {
+                    Debug.WriteLine($"[YtDlpSubtitle] skipped: {errorOutput}");
+                    return false;
+                }
+
+                return SubtitleOutputIndicatesDownload(standardOutput + Environment.NewLine + errorOutput)
+                    || HasNewSubtitleFile(outputTemplate, startedAtUtc);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[YtDlpSubtitle] error: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static bool SubtitleOutputIndicatesDownload(string output)
+        {
+            if (string.IsNullOrWhiteSpace(output)) return false;
+            return output.Contains(".srt", StringComparison.OrdinalIgnoreCase)
+                || output.Contains(".vtt", StringComparison.OrdinalIgnoreCase)
+                || output.Contains("Writing video subtitles to:", StringComparison.OrdinalIgnoreCase)
+                || output.Contains("Writing video automatic captions to:", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool HasNewSubtitleFile(string outputTemplate, DateTime startedAtUtc)
+        {
+            try
+            {
+                string directory = Path.GetDirectoryName(outputTemplate) ?? "";
+                if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory)) return false;
+
+                foreach (string file in Directory.EnumerateFiles(directory))
+                {
+                    string ext = Path.GetExtension(file);
+                    if (!ext.Equals(".srt", StringComparison.OrdinalIgnoreCase)
+                        && !ext.Equals(".vtt", StringComparison.OrdinalIgnoreCase)
+                        && !ext.Equals(".ass", StringComparison.OrdinalIgnoreCase)
+                        && !ext.Equals(".ssa", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (File.GetLastWriteTimeUtc(file) >= startedAtUtc) return true;
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        private async Task<(string Url, string Title)?> ResolveAnilifAsync(string originalUrl)
+        {
+            try
+            {
+                string videoId = "";
+                var uri = new Uri(originalUrl);
+                string queryStr = uri.Query.TrimStart('?');
+                foreach (var param in queryStr.Split('&'))
+                {
+                    var parts = param.Split('=', 2);
+                    if (parts.Length == 2 && parts[0] == "id")
+                    {
+                        videoId = Uri.UnescapeDataString(parts[1]);
+                        break;
+                    }
+                }
+
+                if (string.IsNullOrEmpty(videoId))
+                {
+                    var idMatch = Regex.Match(originalUrl, @"[?&]id=([a-f0-9\-]+)", RegexOptions.IgnoreCase);
+                    if (idMatch.Success) videoId = idMatch.Groups[1].Value;
+                }
+
+                if (string.IsNullOrEmpty(videoId))
+                    throw new Exception("영상 ID를 URL에서 찾을 수 없습니다.");
+
+                string rawTitle = $"Anilife_{videoId.Substring(0, 8)}";
+                string buildId = "4d1c0cd0-5716-4854-8bfc-9824ade8986f";
+
+                var handler = new System.Net.Http.HttpClientHandler { UseCookies = true };
+                using var client = new System.Net.Http.HttpClient(handler);
+                client.Timeout = TimeSpan.FromSeconds(20);
+                client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+                client.DefaultRequestHeaders.Add("Referer", "https://anilife.app/");
+                client.DefaultRequestHeaders.Add("Origin", "https://anilife.app");
+
+                try
+                {
+                    string pageHtml = await client.GetStringAsync(originalUrl);
+                    var titleMatch = Regex.Match(pageHtml, @"<meta\s+property=""og:title""\s+content=""([^""]+)""", RegexOptions.IgnoreCase);
+                    if (!titleMatch.Success)
+                        titleMatch = Regex.Match(pageHtml, @"<title>([^<]+)</title>", RegexOptions.IgnoreCase);
+                    if (titleMatch.Success)
+                    {
+                        rawTitle = titleMatch.Groups[1].Value
+                            .Replace(" | 애니라이프", "")
+                            .Replace(" | Anilife", "")
+                            .Trim();
+                        var buildMatch = Regex.Match(pageHtml, @"buildVersion:""([^""]+)""|""buildVersion"":""([^""]+)""", RegexOptions.IgnoreCase);
+                        if (buildMatch.Success)
+                        {
+                            buildId = !string.IsNullOrEmpty(buildMatch.Groups[1].Value) ? buildMatch.Groups[1].Value : buildMatch.Groups[2].Value;
+                        }
+                    }
+                }
+                catch { }
+
+                var directResolved = await TryResolveAnilifeManifestAsync(client, originalUrl, videoId, rawTitle, buildId);
+                if (directResolved != null) return directResolved;
+
+                // 1. CSRF 토큰 가져오기
+                string csrfToken = "";
+                try
+                {
+                    var tokenReq = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, "https://api.anilife.app/v1/csrf/token");
+                    tokenReq.Headers.Add("Accept", "application/json");
+                    var tokenRes = await client.SendAsync(tokenReq);
+                    if (tokenRes.IsSuccessStatusCode)
+                    {
+                        var tokenJson = await tokenRes.Content.ReadAsStringAsync();
+                        using var doc = System.Text.Json.JsonDocument.Parse(tokenJson);
+                        if (doc.RootElement.TryGetProperty("csrfToken", out var cToken)) csrfToken = cToken.GetString() ?? "";
+                        else if (doc.RootElement.TryGetProperty("token", out var tToken)) csrfToken = tToken.GetString() ?? "";
+                    }
+                }
+                catch { }
+
+                // 2. 미디어 정보 가져오기 (/v1/media/{id} 또는 /v1/video/{id})
+                string[] apiEndpoints = new[]
+                {
+                    $"https://api.anilife.app/v1/media/{videoId}",
+                    $"https://api.gcdn.app/v1/media/{videoId}",
+                    $"https://api.anilife.app/v1/video/{videoId}"
+                };
+
+                string? m3u8Url = null;
+
+                foreach (string apiUrl in apiEndpoints)
+                {
+                    try
+                    {
+                        var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, apiUrl);
+                        req.Headers.Add("Accept", "application/json");
+                        if (!string.IsNullOrEmpty(csrfToken))
+                        {
+                            req.Headers.Add("x-csrf-token", csrfToken);
+                        }
+
+                        var response = await client.SendAsync(req);
+                        if (!response.IsSuccessStatusCode) continue;
+
+                        var bytes = await response.Content.ReadAsByteArrayAsync();
+                        string json = System.Text.Encoding.UTF8.GetString(bytes);
+                        using var doc = System.Text.Json.JsonDocument.Parse(json);
+
+                        void FindM3u8(System.Text.Json.JsonElement element)
+                        {
+                            if (m3u8Url != null) return;
+                            if (element.ValueKind == System.Text.Json.JsonValueKind.Object)
+                            {
+                                foreach (var prop in element.EnumerateObject())
+                                {
+                                    if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.String)
+                                    {
+                                        string val = prop.Value.GetString() ?? "";
+                                        if (val.Contains(".m3u8"))
+                                        {
+                                            m3u8Url = val;
+                                            return;
+                                        }
+                                    }
+                                    FindM3u8(prop.Value);
+                                }
+                            }
+                            else if (element.ValueKind == System.Text.Json.JsonValueKind.Array)
+                            {
+                                foreach (var item in element.EnumerateArray()) FindM3u8(item);
+                            }
+                        }
+
+                        FindM3u8(doc.RootElement);
+                        if (!string.IsNullOrEmpty(m3u8Url)) break;
+                    }
+                    catch { }
+                }
+
+                if (string.IsNullOrEmpty(m3u8Url))
+                {
+                    throw new Exception("영상 스트림 URL을 API에서 추출할 수 없습니다.");
+                }
+
+                string safeTitle = string.Join("_", rawTitle.Split(Path.GetInvalidFileNameChars()));
+                return (m3u8Url, safeTitle);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[AnilifResolver] 오류: {ex.Message}");
+                return null;
+            }
+        }
+
+        private async Task<(string Url, string Title)?> TryResolveAnilifeManifestAsync(System.Net.Http.HttpClient client, string originalUrl, string videoId, string rawTitle, string buildId)
+        {
+            try
+            {
+                string csrfToken = "";
+                string csrfHeaderName = "x-csrf-token";
+
+                var tokenReq = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, "https://api.anilife.app/v1/csrf/token");
+                tokenReq.Headers.TryAddWithoutValidation("Accept", "application/json");
+                tokenReq.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+                var tokenRes = await client.SendAsync(tokenReq);
+                if (!tokenRes.IsSuccessStatusCode) return null;
+
+                string tokenJson = await tokenRes.Content.ReadAsStringAsync();
+                using (var tokenDoc = JsonDocument.Parse(tokenJson))
+                {
+                    if (tokenDoc.RootElement.TryGetProperty("token", out var tokenValue)) csrfToken = tokenValue.GetString() ?? "";
+                    if (tokenDoc.RootElement.TryGetProperty("headerName", out var headerValue)) csrfHeaderName = headerValue.GetString() ?? csrfHeaderName;
+                }
+
+                if (string.IsNullOrEmpty(csrfToken)) return null;
+
+                var mediaReq = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, $"https://api.anilife.app/v1/media/{videoId}");
+                mediaReq.Headers.TryAddWithoutValidation("Accept", "application/json");
+                mediaReq.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+                mediaReq.Headers.TryAddWithoutValidation("x-client-id", "web");
+                mediaReq.Headers.TryAddWithoutValidation("x-build-id", buildId);
+                mediaReq.Headers.TryAddWithoutValidation("x-anilife-referer", Uri.EscapeDataString(new Uri(originalUrl).PathAndQuery));
+                mediaReq.Headers.TryAddWithoutValidation("x-device-token", CreateAnilifeDeviceToken());
+                mediaReq.Headers.TryAddWithoutValidation(csrfHeaderName, csrfToken);
+
+                var mediaRes = await client.SendAsync(mediaReq);
+                if (!mediaRes.IsSuccessStatusCode) return null;
+
+                byte[] responseBytes = await mediaRes.Content.ReadAsByteArrayAsync();
+                string compressed = System.Text.Encoding.UTF8.GetString(responseBytes);
+                string zipsonPayload = DecompressAnilifeUtf16(compressed);
+                var parts = ExtractAnilifeZipsonStrings(zipsonPayload);
+                if (parts.Count < 3) return null;
+
+                string json = DecryptAnilifePayload(parts[0], parts[1], parts[2]);
+                using var mediaDoc = JsonDocument.Parse(json);
+                string access = GetNestedJsonString(mediaDoc.RootElement, "access");
+                if (string.IsNullOrEmpty(access)) return null;
+
+                string mediaTitle = GetNestedJsonString(mediaDoc.RootElement, "media", "name", "kr");
+                string episodeNum = GetNestedJsonString(mediaDoc.RootElement, "episode", "episode_num");
+                string subject = GetNestedJsonString(mediaDoc.RootElement, "episode", "subject");
+
+                string title = string.IsNullOrWhiteSpace(mediaTitle) ? rawTitle : mediaTitle;
+                if (!string.IsNullOrWhiteSpace(episodeNum)) title += $"_EP{episodeNum}";
+                if (!string.IsNullOrWhiteSpace(subject)) title += $"_{subject}";
+                title = string.Join("_", title.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries)).Trim();
+                if (string.IsNullOrWhiteSpace(title)) title = $"Anilife_{videoId.Substring(0, 8)}";
+
+                return ($"https://api.gcdn.app/v1/manifest/a/{access}/master.m3u8", title);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[AnilifeDirectResolver] error: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static List<string> ExtractAnilifeZipsonStrings(string zipsonPayload)
+        {
+            var result = new List<string>();
+            foreach (Match match in Regex.Matches(zipsonPayload, "\u00a8([^\u00a8]+)\u00a8"))
+            {
+                result.Add(match.Groups[1].Value);
+            }
+            return result;
+        }
+
+        private static string DecryptAnilifePayload(string cipherTextBase64, string ivBase64, string tagBase64)
+        {
+            byte[] key = HexToBytes("5f1d6b5cf2b6e5a236aa6352c5e688bc86c257a9b61b183c9926613a90356a48");
+            byte[] cipherText = Convert.FromBase64String(cipherTextBase64);
+            byte[] iv = Convert.FromBase64String(ivBase64);
+            byte[] tag = Convert.FromBase64String(tagBase64);
+            byte[] plainText = new byte[cipherText.Length];
+
+            if (iv.Length == 12)
+            {
+                using var aes = new AesGcm(key, tag.Length);
+                aes.Decrypt(iv, cipherText, tag, plainText);
+            }
+            else
+            {
+                plainText = AesGcmDecryptWithVariableNonce(key, iv, cipherText, tag);
+            }
+
+            return System.Text.Encoding.UTF8.GetString(plainText);
+        }
+
+        private static byte[] AesGcmDecryptWithVariableNonce(byte[] key, byte[] iv, byte[] cipherText, byte[] tag)
+        {
+            byte[] hashSubkey = AesEncryptBlock(key, new byte[16]);
+            byte[] j0 = BuildGcmInitialCounter(hashSubkey, iv);
+            byte[] authTag = AesEncryptBlock(key, j0);
+            byte[] authHash = GHash(hashSubkey, Array.Empty<byte>(), cipherText);
+
+            for (int i = 0; i < authTag.Length; i++)
+            {
+                authTag[i] ^= authHash[i];
+            }
+
+            if (!CryptographicOperations.FixedTimeEquals(authTag.AsSpan(0, tag.Length), tag))
+            {
+                throw new CryptographicException("애니라이프 영상 정보 인증 태그가 일치하지 않습니다.");
+            }
+
+            byte[] counter = (byte[])j0.Clone();
+            IncrementGcmCounter(counter);
+            return Gctr(key, counter, cipherText);
+        }
+
+        private static byte[] BuildGcmInitialCounter(byte[] hashSubkey, byte[] iv)
+        {
+            if (iv.Length == 12)
+            {
+                byte[] j0 = new byte[16];
+                Buffer.BlockCopy(iv, 0, j0, 0, iv.Length);
+                j0[15] = 1;
+                return j0;
+            }
+
+            byte[] y = new byte[16];
+            GHashUpdate(hashSubkey, y, iv);
+
+            byte[] lengthBlock = new byte[16];
+            WriteUInt64BigEndian(lengthBlock, 8, (ulong)iv.Length * 8);
+            GHashBlock(hashSubkey, y, lengthBlock);
+            return y;
+        }
+
+        private static byte[] GHash(byte[] hashSubkey, byte[] associatedData, byte[] cipherText)
+        {
+            byte[] y = new byte[16];
+            GHashUpdate(hashSubkey, y, associatedData);
+            GHashUpdate(hashSubkey, y, cipherText);
+
+            byte[] lengthBlock = new byte[16];
+            WriteUInt64BigEndian(lengthBlock, 0, (ulong)associatedData.Length * 8);
+            WriteUInt64BigEndian(lengthBlock, 8, (ulong)cipherText.Length * 8);
+            GHashBlock(hashSubkey, y, lengthBlock);
+            return y;
+        }
+
+        private static void GHashUpdate(byte[] hashSubkey, byte[] y, byte[] data)
+        {
+            int offset = 0;
+            while (offset + 16 <= data.Length)
+            {
+                byte[] block = new byte[16];
+                Buffer.BlockCopy(data, offset, block, 0, 16);
+                GHashBlock(hashSubkey, y, block);
+                offset += 16;
+            }
+
+            if (offset < data.Length)
+            {
+                byte[] block = new byte[16];
+                Buffer.BlockCopy(data, offset, block, 0, data.Length - offset);
+                GHashBlock(hashSubkey, y, block);
+            }
+        }
+
+        private static void GHashBlock(byte[] hashSubkey, byte[] y, byte[] block)
+        {
+            for (int i = 0; i < 16; i++)
+            {
+                y[i] ^= block[i];
+            }
+
+            byte[] multiplied = GcmMultiply(y, hashSubkey);
+            Buffer.BlockCopy(multiplied, 0, y, 0, 16);
+        }
+
+        private static byte[] GcmMultiply(byte[] x, byte[] y)
+        {
+            byte[] z = new byte[16];
+            byte[] v = (byte[])y.Clone();
+
+            for (int i = 0; i < 128; i++)
+            {
+                if ((x[i / 8] & (1 << (7 - (i % 8)))) != 0)
+                {
+                    for (int j = 0; j < 16; j++) z[j] ^= v[j];
+                }
+
+                bool lsb = (v[15] & 1) != 0;
+                ShiftRightOne(v);
+                if (lsb) v[0] ^= 0xe1;
+            }
+
+            return z;
+        }
+
+        private static void ShiftRightOne(byte[] block)
+        {
+            int carry = 0;
+            for (int i = 0; i < block.Length; i++)
+            {
+                int nextCarry = block[i] & 1;
+                block[i] = (byte)((block[i] >> 1) | (carry << 7));
+                carry = nextCarry;
+            }
+        }
+
+        private static byte[] Gctr(byte[] key, byte[] counter, byte[] input)
+        {
+            byte[] output = new byte[input.Length];
+            for (int offset = 0; offset < input.Length; offset += 16)
+            {
+                byte[] streamBlock = AesEncryptBlock(key, counter);
+                int count = Math.Min(16, input.Length - offset);
+                for (int i = 0; i < count; i++)
+                {
+                    output[offset + i] = (byte)(input[offset + i] ^ streamBlock[i]);
+                }
+                IncrementGcmCounter(counter);
+            }
+            return output;
+        }
+
+        private static byte[] AesEncryptBlock(byte[] key, byte[] block)
+        {
+            using var aes = Aes.Create();
+            aes.Key = key;
+            aes.Mode = CipherMode.ECB;
+            aes.Padding = PaddingMode.None;
+            using var encryptor = aes.CreateEncryptor();
+            return encryptor.TransformFinalBlock(block, 0, 16);
+        }
+
+        private static void IncrementGcmCounter(byte[] counter)
+        {
+            for (int i = 15; i >= 12; i--)
+            {
+                counter[i]++;
+                if (counter[i] != 0) break;
+            }
+        }
+
+        private static void WriteUInt64BigEndian(byte[] buffer, int offset, ulong value)
+        {
+            for (int i = 7; i >= 0; i--)
+            {
+                buffer[offset + i] = (byte)value;
+                value >>= 8;
+            }
+        }
+
+        private static byte[] HexToBytes(string hex)
+        {
+            byte[] bytes = new byte[hex.Length / 2];
+            for (int i = 0; i < bytes.Length; i++)
+            {
+                bytes[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
+            }
+            return bytes;
+        }
+
+        private static string GetNestedJsonString(JsonElement element, params string[] path)
+        {
+            JsonElement current = element;
+            foreach (string name in path)
+            {
+                if (current.ValueKind != JsonValueKind.Object || !current.TryGetProperty(name, out current)) return "";
+            }
+            return current.ValueKind == JsonValueKind.String ? current.GetString() ?? "" : current.ToString();
+        }
+
+        private static string DecompressAnilifeUtf16(string input)
+        {
+            if (string.IsNullOrEmpty(input)) return "";
+            return LzStringDecompress(input.Length, 16384, index => input[index] - 32) ?? "";
+        }
+
+        private static string? LzStringDecompress(int length, int resetValue, Func<int, int> getNextValue)
+        {
+            var dictionary = new Dictionary<int, string>();
+            int enlargeIn = 4;
+            int dictSize = 4;
+            int numBits = 3;
+            string entry;
+            var result = new List<string>();
+            int w;
+            int c;
+            int dataValue = getNextValue(0);
+            int dataPosition = resetValue;
+            int dataIndex = 1;
+
+            int ReadBits(int maxPower)
+            {
+                int value = 0;
+                int power = 1;
+                while (power != maxPower)
+                {
+                    int resb = dataValue & dataPosition;
+                    dataPosition >>= 1;
+                    if (dataPosition == 0)
+                    {
+                        dataPosition = resetValue;
+                        dataValue = dataIndex < length ? getNextValue(dataIndex++) : 0;
+                    }
+                    if (resb > 0) value |= power;
+                    power <<= 1;
+                }
+                return value;
+            }
+
+            for (int i = 0; i < 3; i++) dictionary[i] = ((char)i).ToString();
+
+            int next = ReadBits(4);
+            switch (next)
+            {
+                case 0:
+                    c = ReadBits(256);
+                    break;
+                case 1:
+                    c = ReadBits(65536);
+                    break;
+                case 2:
+                    return "";
+                default:
+                    return null;
+            }
+
+            dictionary[3] = ((char)c).ToString();
+            w = 3;
+            result.Add(dictionary[3]);
+
+            while (true)
+            {
+                if (dataIndex > length) return "";
+
+                c = ReadBits(1 << numBits);
+                switch (c)
+                {
+                    case 0:
+                        dictionary[dictSize++] = ((char)ReadBits(256)).ToString();
+                        c = dictSize - 1;
+                        enlargeIn--;
+                        break;
+                    case 1:
+                        dictionary[dictSize++] = ((char)ReadBits(65536)).ToString();
+                        c = dictSize - 1;
+                        enlargeIn--;
+                        break;
+                    case 2:
+                        return string.Concat(result);
+                }
+
+                if (enlargeIn == 0)
+                {
+                    enlargeIn = 1 << numBits;
+                    numBits++;
+                }
+
+                if (dictionary.TryGetValue(c, out string? value))
+                {
+                    entry = value;
+                }
+                else if (c == dictSize)
+                {
+                    entry = dictionary[w] + dictionary[w][0];
+                }
+                else
+                {
+                    return null;
+                }
+
+                result.Add(entry);
+                dictionary[dictSize++] = dictionary[w] + entry[0];
+                enlargeIn--;
+                w = c;
+
+                if (enlargeIn == 0)
+                {
+                    enlargeIn = 1 << numBits;
+                    numBits++;
+                }
+            }
+        }
+
+        private static bool IsAnilifeManifestUrl(string url)
+        {
+            return url.Contains("api.gcdn.app/v1/manifest/a/", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsLinkkfWatchUrl(string url)
+        {
+            return url.Contains("linkkf.drewpx.xyz/watch/", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsLinkkfStreamUrl(string url)
+        {
+            return url.Contains("playv2.sub3.top/", StringComparison.OrdinalIgnoreCase)
+                || url.Contains("play.sub2.top/", StringComparison.OrdinalIgnoreCase)
+                || url.Contains("imgkr1.top/", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string CreateAnilifeDeviceToken()
+        {
+            byte[] bytes = RandomNumberGenerator.GetBytes(16);
+            return Convert.ToHexString(bytes).ToLowerInvariant();
+        }
+
+        private string GetPreferredFileName(string fallback)
+        {
+            string source = string.IsNullOrWhiteSpace(PreferredTitle) ? fallback : PreferredTitle;
+            if (string.IsNullOrWhiteSpace(source)) return "";
+
+            string safeName = string.Join("_", source.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries))
+                .Replace("\r", " ")
+                .Replace("\n", " ")
+                .Trim();
+
+            while (safeName.Contains("  ", StringComparison.Ordinal))
+            {
+                safeName = safeName.Replace("  ", " ");
+            }
+
+            if (safeName.Length > 140) safeName = safeName[..140].Trim();
+            return safeName;
+        }
+
+        private static string GetUniqueMp4Path(string saveDirectory, string customFileName)
+        {
+            string safeName = string.IsNullOrWhiteSpace(customFileName)
+                ? $"Video_{DateTime.Now:yyyyMMdd_HHmmss}"
+                : string.Join("_", customFileName.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries)).Trim();
+
+            if (string.IsNullOrWhiteSpace(safeName)) safeName = $"Video_{DateTime.Now:yyyyMMdd_HHmmss}";
+
+            string outputPath = Path.Combine(saveDirectory, $"{safeName}.mp4");
+            int counter = 1;
+            while (File.Exists(outputPath))
+            {
+                outputPath = Path.Combine(saveDirectory, $"{safeName}_{counter++}.mp4");
+            }
+            return outputPath;
+        }
+
+        private static List<string> ExtractHlsMediaUrls(string manifestUrl, string manifest, bool variantsOnly)
+        {
+            var result = new List<string>();
+            var baseUri = new Uri(manifestUrl);
+            string[] lines = manifest.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+
+            foreach (string rawLine in lines)
+            {
+                string line = rawLine.Trim();
+                if (string.IsNullOrEmpty(line) || line.StartsWith("#")) continue;
+
+                bool isVariant = line.Contains(".m3u8", StringComparison.OrdinalIgnoreCase);
+                if (variantsOnly != isVariant) continue;
+
+                if (Uri.TryCreate(baseUri, line, out var absoluteUri))
+                {
+                    result.Add(absoluteUri.ToString());
+                }
+            }
+
+            return result;
+        }
+
+        private async Task<string> DownloadAnilifeSegmentsAsync(string manifestUrl, string saveDirectory, System.Threading.CancellationToken token, string customFileName = "")
+        {
+            string outputFilePath = GetUniqueMp4Path(saveDirectory, customFileName);
+            string tempTsPath = Path.Combine(Path.GetTempPath(), $"anilife_{Guid.NewGuid():N}.ts");
+            string ffmpegPath = SettingsManager.GetFFmpegPath();
+
+            using var client = new System.Net.Http.HttpClient();
+            client.Timeout = TimeSpan.FromSeconds(60);
+            client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+            client.DefaultRequestHeaders.TryAddWithoutValidation("Referer", "https://anilife.app/");
+            client.DefaultRequestHeaders.TryAddWithoutValidation("Origin", "https://anilife.app");
+
+            try
+            {
+                OnProgressChanged?.Invoke(1);
+                string manifest = await client.GetStringAsync(manifestUrl, token);
+                var segmentUrls = ExtractHlsMediaUrls(manifestUrl, manifest, variantsOnly: false);
+
+                if (segmentUrls.Count == 0)
+                {
+                    var variantUrls = ExtractHlsMediaUrls(manifestUrl, manifest, variantsOnly: true);
+                    if (variantUrls.Count > 0)
+                    {
+                        manifestUrl = variantUrls[^1];
+                        manifest = await client.GetStringAsync(manifestUrl, token);
+                        segmentUrls = ExtractHlsMediaUrls(manifestUrl, manifest, variantsOnly: false);
+                    }
+                }
+
+                if (segmentUrls.Count == 0)
+                {
+                    throw new Exception("애니라이프 HLS 세그먼트를 찾을 수 없습니다.");
+                }
+
+                await using (var output = new FileStream(tempTsPath, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 1024, useAsync: true))
+                {
+                    for (int i = 0; i < segmentUrls.Count; i++)
+                    {
+                        token.ThrowIfCancellationRequested();
+
+                        using var response = await client.GetAsync(segmentUrls[i], System.Net.Http.HttpCompletionOption.ResponseHeadersRead, token);
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            throw new Exception($"애니라이프 세그먼트 다운로드 실패 ({(int)response.StatusCode}).");
+                        }
+
+                        await using var input = await response.Content.ReadAsStreamAsync(token);
+                        await input.CopyToAsync(output, token);
+
+                        double progress = 1 + ((i + 1) * 94.0 / segmentUrls.Count);
+                        OnProgressChanged?.Invoke(Math.Min(95, progress));
+                    }
+                }
+
+                OnProgressChanged?.Invoke(96);
+
+                string arguments = $"-i \"{tempTsPath}\" -c copy \"{outputFilePath}\" -y";
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = ffmpegPath,
+                    Arguments = arguments,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    StandardOutputEncoding = System.Text.Encoding.UTF8,
+                    StandardErrorEncoding = System.Text.Encoding.UTF8
+                };
+
+                using var process = new Process { StartInfo = psi };
+                string errorOutput = "";
+                process.ErrorDataReceived += (sender, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data)) errorOutput += e.Data + Environment.NewLine;
+                };
+
+                process.Start();
+                process.BeginErrorReadLine();
+
+                try
+                {
+                    await process.WaitForExitAsync(token);
+                }
+                catch (OperationCanceledException)
+                {
+                    try { if (!process.HasExited) process.Kill(true); } catch { }
+                    throw;
+                }
+
+                if (process.ExitCode != 0 || !File.Exists(outputFilePath))
+                {
+                    throw new Exception($"애니라이프 MP4 변환 실패.\n\n[오류 메시지]:\n{errorOutput}");
+                }
+
+                OnProgressChanged?.Invoke(100);
+                OnDownloadCompleted?.Invoke(outputFilePath);
+                return outputFilePath;
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(tempTsPath)) File.Delete(tempTsPath);
+                }
+                catch { }
+            }
+        }
+
+        private async Task<string> DownloadM3u8WithFFmpegAsync(string videoUrl, string saveDirectory, string browser, System.Threading.CancellationToken token, Dictionary<string, string>? headers, string customFileName = "")
+        {
+            string ffmpegPath = SettingsManager.GetFFmpegPath();
+            string outputFileName = string.IsNullOrEmpty(customFileName) ? $"Video_{DateTime.Now:yyyyMMdd_HHmmss}.mp4" : $"{customFileName}.mp4";
+            
+            // 중복 방지
+            if (!string.IsNullOrEmpty(customFileName))
+            {
+                int counter = 1;
+                while (File.Exists(Path.Combine(saveDirectory, outputFileName)))
+                {
+                    outputFileName = $"{customFileName}_{counter++}.mp4";
+                }
+            }
+
+            string outputFilePath = Path.Combine(saveDirectory, outputFileName);
+
+            // 헤더 정보(User-Agent, Referer 등) 조합
+            string headerArgs = "";
+            string userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+            
+            if (headers != null || videoUrl.Contains("gcdn.app") || videoUrl.Contains("anilife.app") || IsLinkkfStreamUrl(videoUrl) || videoUrl.Contains("sooplive") || videoUrl.Contains("naver") || videoUrl.Contains("pstatic.net"))
+            {
+                List<string> headerLines = new List<string>();
+                if (videoUrl.Contains("gcdn.app") || videoUrl.Contains("anilife.app"))
+                {
+                    headerLines.Add("Referer: https://anilife.app/");
+                    headerLines.Add("Origin: https://anilife.app");
+                }
+                else if (IsLinkkfStreamUrl(videoUrl))
+                {
+                    string origin = "https://playv2.sub3.top";
+                    try
+                    {
+                        var uri = new Uri(videoUrl);
+                        if (uri.Host.Contains("play.sub2.top", StringComparison.OrdinalIgnoreCase)) origin = "https://play.sub2.top";
+                    }
+                    catch { }
+
+                    headerLines.Add($"Referer: {origin}/");
+                    headerLines.Add($"Origin: {origin}");
+                }
+                else if (videoUrl.Contains("sooplive"))
+                {
+                    headerLines.Add("Referer: https://vod.sooplive.com/");
+                    headerLines.Add("Origin: https://vod.sooplive.com");
+                }
+                else if (videoUrl.Contains("chzzk.naver") || videoUrl.Contains("pstatic.net"))
+                {
+                    headerLines.Add("Referer: https://chzzk.naver.com/");
+                    headerLines.Add("Origin: https://chzzk.naver.com");
+                }
+                else if (videoUrl.Contains("naver.com"))
+                {
+                    headerLines.Add("Referer: https://tv.naver.com/");
+                    headerLines.Add("Origin: https://tv.naver.com");
+                }
+                
+                if (headers != null)
+                {
+                    foreach (var h in headers)
+                    {
+                        if (h.Key.ToLower() == "user-agent") userAgent = h.Value;
+                        else if (ShouldSkipCookieHeaderForDirectHls(videoUrl, h.Key)) continue;
+                        else headerLines.Add($"{h.Key}: {h.Value}");
+                    }
+                }
+
+                if (headerLines.Count > 0)
+                {
+                    string joinedHeaders = string.Join("\r\n", headerLines) + "\r\n";
+                    headerArgs = $"-headers \"{joinedHeaders}\" ";
+                }
+            }
+
+            // 사용자 요청: ffmpeg -i "m3u8파일url" -c copy 영상이름.mp4
+            string hlsInputOptions = (videoUrl.Contains("gcdn.app") || videoUrl.Contains("anilife.app") || IsLinkkfStreamUrl(videoUrl) || videoUrl.Contains("sooplive") || videoUrl.Contains("pstatic.net")) ? "-allowed_extensions ALL " : "";
+            string arguments = $"-user_agent \"{userAgent}\" {headerArgs}{hlsInputOptions}-i \"{videoUrl}\" -c copy \"{outputFilePath}\" -y";
+
+            ProcessStartInfo psi = new ProcessStartInfo
+            {
+                FileName = ffmpegPath,
+                Arguments = arguments,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8
+            };
+
+            using (Process process = new Process())
+            {
+                process.StartInfo = psi;
+                string errorOutput = "";
+
+                // ffmpeg progress (가상 프로그레스, m3u8은 전체 길이를 모르면 정확한 퍼센트를 알기 어려움)
+                double fakeProgress = 0;
+                process.ErrorDataReceived += (sender, e) =>
+                {
+                    if (string.IsNullOrEmpty(e.Data)) return;
+                    errorOutput += e.Data + Environment.NewLine;
+                    
+                    if (e.Data.Contains("frame=") || e.Data.Contains("time="))
+                    {
+                        // 임시 프로그레스 효과 (최대 99%까지)
+                        fakeProgress += 0.5;
+                        if (fakeProgress > 99) fakeProgress = 99;
+                        OnProgressChanged?.Invoke(fakeProgress);
+                    }
+                };
+
+                try
+                {
+                    process.Start();
+                    process.BeginErrorReadLine();
+
+                    using (token.Register(() => { try { if (!process.HasExited) process.Kill(true); } catch { } }))
+                    {
+                        await process.WaitForExitAsync();
+                    }
+
+                    if (process.ExitCode == 0 && File.Exists(outputFilePath))
+                    {
+                        OnProgressChanged?.Invoke(100);
+                        OnDownloadCompleted?.Invoke(outputFilePath);
+                        return outputFilePath;
+                    }
+                    else
+                    {
+                        token.ThrowIfCancellationRequested();
+                        throw new Exception($"FFmpeg 다운로드 실패.\n\n[명령어]: ffmpeg {arguments}\n\n[오류 메시지]:\n{errorOutput}");
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+            }
+        }
+
+        private static bool ShouldSkipCookieHeaderForDirectHls(string videoUrl, string headerName)
+        {
+            if (!headerName.Equals("Cookie", StringComparison.OrdinalIgnoreCase)) return false;
+
+            return videoUrl.Contains("vod-normal-kr-cdn", StringComparison.OrdinalIgnoreCase)
+                || videoUrl.Contains("sooplive.com", StringComparison.OrdinalIgnoreCase)
+                || videoUrl.Contains("pstatic.net", StringComparison.OrdinalIgnoreCase);
         }
     }
 }

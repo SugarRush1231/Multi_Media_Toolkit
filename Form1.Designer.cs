@@ -31,6 +31,7 @@ partial class Form1
     private System.Windows.Forms.Label lblVideoTitle;
     private System.Windows.Forms.Label lblQuality;
     private System.Windows.Forms.ComboBox cmbQuality;
+    private System.Windows.Forms.CheckBox chkYoutubeDownloadSubtitles;
     private YoutubeDownloader.RoundButton btnAddQueue;
     private System.Windows.Forms.ListView lvQueue;
     private System.Windows.Forms.ColumnHeader colTitle;
@@ -102,10 +103,19 @@ partial class Form1
     private System.Windows.Forms.Label lblYtDlpDesc;
     private System.Windows.Forms.Panel panelYtDlpUrl;
     private System.Windows.Forms.TextBox txtYtDlpUrl;
+    private System.Windows.Forms.CheckBox chkYtDlpDownloadSubtitles;
     private YoutubeDownloader.RoundButton btnYtDlpRun;
     private YoutubeDownloader.RoundButton btnYtDlpCancel;
     private System.Windows.Forms.Label lblYtDlpStatus;
     private System.Windows.Forms.ProgressBar pbYtDlp;
+    private System.Windows.Forms.ListView lvYtDlpQueue;
+    private System.Windows.Forms.ColumnHeader colYtDlpUrl;
+    private System.Windows.Forms.ColumnHeader colYtDlpSubtitles;
+    private System.Windows.Forms.ColumnHeader colYtDlpStatus;
+    private YoutubeDownloader.RoundButton btnRemoveSelectedYtDlp;
+    private System.Windows.Forms.ContextMenuStrip contextMenuYtDlpRemove;
+    private System.Windows.Forms.ToolStripMenuItem menuYtDlpRemoveSelected;
+    private YoutubeDownloader.RoundButton btnYtDlpLoginBrowser;
     private YoutubeDownloader.ToggleSwitch tglXPrivateMode;
     private System.Windows.Forms.Label lblInstaPrivateMode;
     private YoutubeDownloader.ToggleSwitch tglInstaPrivateMode;
@@ -181,6 +191,7 @@ partial class Form1
         picThumbnail = new PictureBox();
         lblQuality = new Label();
         cmbQuality = new ComboBox();
+        chkYoutubeDownloadSubtitles = new CheckBox();
         btnAddQueue = new RoundButton();
         lvQueue = new ListView();
         colTitle = new ColumnHeader();
@@ -211,10 +222,19 @@ partial class Form1
         lblYtDlpDesc = new Label();
         panelYtDlpUrl = new Panel();
         txtYtDlpUrl = new TextBox();
+        chkYtDlpDownloadSubtitles = new CheckBox();
         btnYtDlpRun = new RoundButton();
         btnYtDlpCancel = new RoundButton();
         lblYtDlpStatus = new Label();
         pbYtDlp = new ProgressBar();
+        lvYtDlpQueue = new ListView();
+        colYtDlpUrl = new ColumnHeader();
+        colYtDlpSubtitles = new ColumnHeader();
+        colYtDlpStatus = new ColumnHeader();
+        btnRemoveSelectedYtDlp = new RoundButton();
+        contextMenuYtDlpRemove = new ContextMenuStrip(components);
+        menuYtDlpRemoveSelected = new ToolStripMenuItem();
+        btnYtDlpLoginBrowser = new RoundButton();
         tabWebM = new TabPage();
         lblWebMTitle = new Label();
         panelWebMInput = new Panel();
@@ -287,6 +307,7 @@ partial class Form1
         ((System.ComponentModel.ISupportInitialize)picThumbnail).BeginInit();
         contextMenuRemove.SuspendLayout();
         tabYtDlp.SuspendLayout();
+        contextMenuYtDlpRemove.SuspendLayout();
         panelXBrowser.SuspendLayout();
         ((System.ComponentModel.ISupportInitialize)webViewX).BeginInit();
         panelYtDlpUrl.SuspendLayout();
@@ -489,6 +510,7 @@ partial class Form1
         tabYoutube.Controls.Add(panelInfo);
         tabYoutube.Controls.Add(lblQuality);
         tabYoutube.Controls.Add(cmbQuality);
+        tabYoutube.Controls.Add(chkYoutubeDownloadSubtitles);
         tabYoutube.Controls.Add(btnAddQueue);
         tabYoutube.Controls.Add(lvQueue);
         tabYoutube.Controls.Add(btnRemoveSelected);
@@ -620,6 +642,18 @@ partial class Form1
         cmbQuality.Name = "cmbQuality";
         cmbQuality.Size = new Size(360, 28);
         cmbQuality.TabIndex = 6;
+        // 
+        // chkYoutubeDownloadSubtitles
+        // 
+        chkYoutubeDownloadSubtitles.AutoSize = true;
+        chkYoutubeDownloadSubtitles.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+        chkYoutubeDownloadSubtitles.ForeColor = Color.FromArgb(80, 80, 80);
+        chkYoutubeDownloadSubtitles.Location = new Point(100, 252);
+        chkYoutubeDownloadSubtitles.Name = "chkYoutubeDownloadSubtitles";
+        chkYoutubeDownloadSubtitles.Size = new Size(150, 19);
+        chkYoutubeDownloadSubtitles.TabIndex = 14;
+        chkYoutubeDownloadSubtitles.Text = "\uC790\uB9C9\uB3C4 \uD568\uAED8 \uB2E4\uC6B4\uB85C\uB4DC";
+        chkYoutubeDownloadSubtitles.UseVisualStyleBackColor = true;
         // 
         // btnAddQueue
         // 
@@ -759,10 +793,14 @@ partial class Form1
         tabYtDlp.Controls.Add(lblYtDlpTitle);
         tabYtDlp.Controls.Add(lblYtDlpDesc);
         tabYtDlp.Controls.Add(panelYtDlpUrl);
+        tabYtDlp.Controls.Add(chkYtDlpDownloadSubtitles);
         tabYtDlp.Controls.Add(btnYtDlpRun);
         tabYtDlp.Controls.Add(btnYtDlpCancel);
         tabYtDlp.Controls.Add(lblYtDlpStatus);
         tabYtDlp.Controls.Add(pbYtDlp);
+        tabYtDlp.Controls.Add(lvYtDlpQueue);
+        tabYtDlp.Controls.Add(btnRemoveSelectedYtDlp);
+        tabYtDlp.Controls.Add(btnYtDlpLoginBrowser);
         tabYtDlp.Location = new Point(4, 5);
         tabYtDlp.Name = "tabYtDlp";
         tabYtDlp.Size = new Size(612, 551);
@@ -778,6 +816,7 @@ partial class Form1
         lblXPrivateMode.Size = new Size(150, 17);
         lblXPrivateMode.TabIndex = 0;
         lblXPrivateMode.Text = "X 비공개 영상 전용 모드";
+        lblXPrivateMode.Visible = false;
         // 
         // tglXPrivateMode
         // 
@@ -787,6 +826,7 @@ partial class Form1
         tglXPrivateMode.Padding = new Padding(6);
         tglXPrivateMode.Size = new Size(60, 25);
         tglXPrivateMode.TabIndex = 1;
+        tglXPrivateMode.Visible = false;
         tglXPrivateMode.CheckedChanged += TglXPrivateMode_CheckedChanged;
         // 
         // lblInstaPrivateMode
@@ -799,6 +839,7 @@ partial class Form1
         lblInstaPrivateMode.Size = new Size(160, 17);
         lblInstaPrivateMode.TabIndex = 2;
         lblInstaPrivateMode.Text = "Instagram 실패 시 로그인";
+        lblInstaPrivateMode.Visible = false;
         // 
         // tglInstaPrivateMode
         // 
@@ -808,6 +849,7 @@ partial class Form1
         tglInstaPrivateMode.Padding = new Padding(6);
         tglInstaPrivateMode.Size = new Size(60, 25);
         tglInstaPrivateMode.TabIndex = 3;
+        tglInstaPrivateMode.Visible = false;
         tglInstaPrivateMode.CheckedChanged += TglInstaPrivateMode_CheckedChanged;
         // 
         // panelXBrowser
@@ -907,11 +949,11 @@ partial class Form1
         // 
         // lblYtDlpSavePath
         // 
-        lblYtDlpSavePath.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        lblYtDlpSavePath.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
         lblYtDlpSavePath.AutoSize = true;
         lblYtDlpSavePath.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
         lblYtDlpSavePath.ForeColor = Color.FromArgb(80, 80, 80);
-        lblYtDlpSavePath.Location = new Point(20, 385);
+        lblYtDlpSavePath.Location = new Point(20, 505);
         lblYtDlpSavePath.Name = "lblYtDlpSavePath";
         lblYtDlpSavePath.Size = new Size(61, 15);
         lblYtDlpSavePath.TabIndex = 3;
@@ -919,14 +961,14 @@ partial class Form1
         // 
         // btnOpenYtDlpFolder
         // 
-        btnOpenYtDlpFolder.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        btnOpenYtDlpFolder.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
         btnOpenYtDlpFolder.BackColor = Color.FromArgb(226, 232, 240);
         btnOpenYtDlpFolder.BorderRadius = 13;
         btnOpenYtDlpFolder.FlatAppearance.BorderSize = 0;
         btnOpenYtDlpFolder.FlatStyle = FlatStyle.Flat;
         btnOpenYtDlpFolder.Font = new Font("Segoe UI", 8F, FontStyle.Bold);
         btnOpenYtDlpFolder.ForeColor = Color.FromArgb(51, 65, 85);
-        btnOpenYtDlpFolder.Location = new Point(20, 410);
+        btnOpenYtDlpFolder.Location = new Point(20, 525);
         btnOpenYtDlpFolder.Name = "btnOpenYtDlpFolder";
         btnOpenYtDlpFolder.Size = new Size(80, 26);
         btnOpenYtDlpFolder.TabIndex = 13;
@@ -952,12 +994,13 @@ partial class Form1
         lblYtDlpDesc.Name = "lblYtDlpDesc";
         lblYtDlpDesc.Size = new Size(570, 60);
         lblYtDlpDesc.TabIndex = 5;
-        lblYtDlpDesc.Text = "치지직, Instagram, SOOP, Pinterest, X, Vimeo 등 다양한 사이트를 지원합니다.\n\n※지원 안내: 치지직, SOOP은 VOD, clips(catch) 형태의 Video 주소만 지원합니다.";
+        lblYtDlpDesc.Text = "치지직, Instagram, SOOP, Pinterest, X, Vimeo 등 다양한 사이트를 지원합니다.\n비공개/일부공개/나이제한 영상은 [로그인하고 받기]에서 로그인 후 즉시 다운로드하거나 URL로 받을 수 있습니다.";
         // 
         // panelYtDlpUrl
         // 
         panelYtDlpUrl.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         panelYtDlpUrl.BackColor = Color.White;
+        panelYtDlpUrl.BorderStyle = BorderStyle.FixedSingle;
         panelYtDlpUrl.Controls.Add(txtYtDlpUrl);
         panelYtDlpUrl.Location = new Point(20, 130);
         panelYtDlpUrl.Name = "panelYtDlpUrl";
@@ -976,6 +1019,18 @@ partial class Form1
         txtYtDlpUrl.Size = new Size(550, 20);
         txtYtDlpUrl.TabIndex = 0;
         // 
+        // chkYtDlpDownloadSubtitles
+        // 
+        chkYtDlpDownloadSubtitles.AutoSize = true;
+        chkYtDlpDownloadSubtitles.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+        chkYtDlpDownloadSubtitles.ForeColor = Color.FromArgb(80, 80, 80);
+        chkYtDlpDownloadSubtitles.Location = new Point(20, 230);
+        chkYtDlpDownloadSubtitles.Name = "chkYtDlpDownloadSubtitles";
+        chkYtDlpDownloadSubtitles.Size = new Size(150, 19);
+        chkYtDlpDownloadSubtitles.TabIndex = 14;
+        chkYtDlpDownloadSubtitles.Text = "\uC790\uB9C9\uB3C4 \uD568\uAED8 \uB2E4\uC6B4\uB85C\uB4DC";
+        chkYtDlpDownloadSubtitles.UseVisualStyleBackColor = true;
+        // 
         // btnYtDlpRun
         // 
         btnYtDlpRun.BackColor = Color.FromArgb(2, 132, 199);
@@ -988,7 +1043,7 @@ partial class Form1
         btnYtDlpRun.Name = "btnYtDlpRun";
         btnYtDlpRun.Size = new Size(150, 38);
         btnYtDlpRun.TabIndex = 7;
-        btnYtDlpRun.Text = "다운로드 시작 🚀";
+        btnYtDlpRun.Text = "\uB2E4\uC6B4\uB85C\uB4DC";
         btnYtDlpRun.UseVisualStyleBackColor = false;
         btnYtDlpRun.Click += BtnYtDlpRun_Click;
         // 
@@ -1000,7 +1055,7 @@ partial class Form1
         btnYtDlpCancel.FlatStyle = FlatStyle.Flat;
         btnYtDlpCancel.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
         btnYtDlpCancel.ForeColor = Color.FromArgb(225, 29, 72);
-        btnYtDlpCancel.Location = new Point(180, 182);
+        btnYtDlpCancel.Location = new Point(398, 182);
         btnYtDlpCancel.Name = "btnYtDlpCancel";
         btnYtDlpCancel.Size = new Size(120, 38);
         btnYtDlpCancel.TabIndex = 8;
@@ -1026,6 +1081,85 @@ partial class Form1
         pbYtDlp.Size = new Size(570, 20);
         pbYtDlp.Style = ProgressBarStyle.Continuous;
         pbYtDlp.TabIndex = 10;
+        // 
+        // lvYtDlpQueue
+        // 
+        lvYtDlpQueue.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
+        lvYtDlpQueue.BackColor = Color.White;
+        lvYtDlpQueue.BorderStyle = BorderStyle.None;
+        lvYtDlpQueue.Columns.AddRange(new ColumnHeader[] { colYtDlpUrl, colYtDlpSubtitles, colYtDlpStatus });
+        lvYtDlpQueue.ContextMenuStrip = contextMenuYtDlpRemove;
+        lvYtDlpQueue.Font = new Font("Segoe UI", 9.5F);
+        lvYtDlpQueue.FullRowSelect = true;
+        lvYtDlpQueue.GridLines = false;
+        lvYtDlpQueue.Location = new Point(20, 380);
+        lvYtDlpQueue.Name = "lvYtDlpQueue";
+        lvYtDlpQueue.Size = new Size(570, 110);
+        lvYtDlpQueue.TabIndex = 15;
+        lvYtDlpQueue.UseCompatibleStateImageBehavior = false;
+        lvYtDlpQueue.View = View.Details;
+        // 
+        // colYtDlpUrl
+        // 
+        colYtDlpUrl.Text = "URL";
+        colYtDlpUrl.Width = 285;
+        // 
+        // colYtDlpSubtitles
+        // 
+        colYtDlpSubtitles.Text = "\uC790\uB9C9";
+        colYtDlpSubtitles.Width = 55;
+        // 
+        // colYtDlpStatus
+        // 
+        colYtDlpStatus.Text = "\uC0C1\uD0DC";
+        colYtDlpStatus.Width = 220;
+        // 
+        // btnRemoveSelectedYtDlp
+        // 
+        btnRemoveSelectedYtDlp.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+        btnRemoveSelectedYtDlp.BackColor = Color.FromArgb(255, 241, 242);
+        btnRemoveSelectedYtDlp.BorderRadius = 14;
+        btnRemoveSelectedYtDlp.FlatAppearance.BorderSize = 0;
+        btnRemoveSelectedYtDlp.FlatStyle = FlatStyle.Flat;
+        btnRemoveSelectedYtDlp.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+        btnRemoveSelectedYtDlp.ForeColor = Color.FromArgb(225, 29, 72);
+        btnRemoveSelectedYtDlp.Location = new Point(470, 500);
+        btnRemoveSelectedYtDlp.Name = "btnRemoveSelectedYtDlp";
+        btnRemoveSelectedYtDlp.Size = new Size(120, 28);
+        btnRemoveSelectedYtDlp.TabIndex = 16;
+        btnRemoveSelectedYtDlp.Text = "\uC120\uD0DD \uCDE8\uC18C";
+        btnRemoveSelectedYtDlp.UseVisualStyleBackColor = false;
+        btnRemoveSelectedYtDlp.Click += BtnRemoveSelectedYtDlp_Click;
+        // 
+        // contextMenuYtDlpRemove
+        // 
+        contextMenuYtDlpRemove.Items.AddRange(new ToolStripItem[] { menuYtDlpRemoveSelected });
+        contextMenuYtDlpRemove.Name = "contextMenuYtDlpRemove";
+        contextMenuYtDlpRemove.Size = new Size(179, 26);
+        // 
+        // menuYtDlpRemoveSelected
+        // 
+        menuYtDlpRemoveSelected.Name = "menuYtDlpRemoveSelected";
+        menuYtDlpRemoveSelected.Size = new Size(178, 22);
+        menuYtDlpRemoveSelected.Text = "\uC120\uD0DD \uD56D\uBAA9 \uCDE8\uC18C";
+        menuYtDlpRemoveSelected.Click += BtnRemoveSelectedYtDlp_Click;
+        // 
+        // btnYtDlpLoginBrowser
+        // 
+        btnYtDlpLoginBrowser.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        btnYtDlpLoginBrowser.BackColor = Color.FromArgb(15, 118, 110);
+        btnYtDlpLoginBrowser.BorderRadius = 15;
+        btnYtDlpLoginBrowser.FlatAppearance.BorderSize = 0;
+        btnYtDlpLoginBrowser.FlatStyle = FlatStyle.Flat;
+        btnYtDlpLoginBrowser.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
+        btnYtDlpLoginBrowser.ForeColor = Color.White;
+        btnYtDlpLoginBrowser.Location = new Point(180, 182);
+        btnYtDlpLoginBrowser.Name = "btnYtDlpLoginBrowser";
+        btnYtDlpLoginBrowser.Size = new Size(180, 38);
+        btnYtDlpLoginBrowser.TabIndex = 17;
+        btnYtDlpLoginBrowser.Text = "\uB85C\uADF8\uC778\uD558\uACE0 \uBC1B\uAE30";
+        btnYtDlpLoginBrowser.UseVisualStyleBackColor = false;
+        btnYtDlpLoginBrowser.Click += BtnYtDlpLoginBrowser_Click;
         // 
         // tabWebM
         // 
@@ -1655,7 +1789,7 @@ partial class Form1
         lblAbout.Name = "lblAbout";
         lblAbout.Size = new Size(570, 80);
         lblAbout.TabIndex = 17;
-        lblAbout.Text = "Multi Media Toolkit v1.2.2\nCreated by 김병석\n© 2026 all rights reserved.\n(kbs318@naver.com)";
+        lblAbout.Text = "Multi Media Toolkit v1.3.0\nCreated by 김병석\n© 2026 all rights reserved.\n(kbs318@naver.com)";
         lblAbout.TextAlign = ContentAlignment.BottomRight;
         // 
         // lblSettingsTitle
@@ -1851,6 +1985,7 @@ partial class Form1
         contextMenuRemove.ResumeLayout(false);
         tabYtDlp.ResumeLayout(false);
         tabYtDlp.PerformLayout();
+        contextMenuYtDlpRemove.ResumeLayout(false);
         panelXBrowser.ResumeLayout(false);
         ((System.ComponentModel.ISupportInitialize)webViewX).EndInit();
         panelYtDlpUrl.ResumeLayout(false);

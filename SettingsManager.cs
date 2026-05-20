@@ -10,6 +10,17 @@ public class AppSettings
     public bool ShowNotifications { get; set; } = true;
     public bool AutoOpenFolder { get; set; } = false;
     public bool AutoUpdateCheck { get; set; } = true;
+    public bool KeepLoginSession { get; set; } = false;
+    public bool UseSiteFolderRules { get; set; } = false;
+    public bool UseCustomSiteFolders { get; set; } = false;
+    public System.Collections.Generic.Dictionary<string, string> SiteFolderOverrides { get; set; } = new System.Collections.Generic.Dictionary<string, string>();
+    public string FileNamePreset { get; set; } = "Title";
+    public string CustomFileNameTemplate { get; set; } = "{title}";
+    public string DefaultVideoQuality { get; set; } = "Best";
+    public string SubtitleLanguagePreset { get; set; } = "Ko";
+    public bool EnableWidgetMode { get; set; } = false;
+    public int WidgetLocationX { get; set; } = int.MinValue;
+    public int WidgetLocationY { get; set; } = int.MinValue;
     public string LastSeenVersion { get; set; } = ""; // 기본값은 비워둠 (신규 유저 구분을 위함)
     public string LastHeartbeatDate { get; set; } = "";
     public string InstallId { get; set; } = ""; // 8자리 익명 기기 ID
@@ -43,6 +54,12 @@ public static class SettingsManager
                 Settings = JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
             }
             catch { }
+        }
+
+        if (string.IsNullOrWhiteSpace(Settings.InstallId))
+        {
+            Settings.InstallId = Guid.NewGuid().ToString("N").Substring(0, 8).ToUpperInvariant();
+            Save();
         }
     }
 

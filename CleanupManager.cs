@@ -10,6 +10,41 @@ namespace YoutubeDownloader
     {
         private static readonly ConcurrentDictionary<string, byte> ActiveFiles = new ConcurrentDictionary<string, byte>();
         private static readonly ConcurrentDictionary<Process, byte> ActiveProcesses = new ConcurrentDictionary<Process, byte>();
+        private static readonly string[] WebViewCacheFolderNames =
+        {
+            "Cache",
+            "Code Cache",
+            "GPUCache",
+            "Media Cache",
+            "DawnCache",
+            "DawnWebGPUCache",
+            "DawnGraphiteCache",
+            "GrShaderCache",
+            "ShaderCache",
+            "GraphiteDawnCache",
+            "component_crx_cache",
+            "extensions_crx_cache",
+            "VideoDecodeStats"
+        };
+
+        private static readonly string[] WebViewHistoryFileNames =
+        {
+            "History",
+            "History-journal",
+            "History Provider Cache",
+            "History Provider Cache-journal",
+            "Visited Links",
+            "Top Sites",
+            "Top Sites-journal",
+            "Favicons",
+            "Favicons-journal",
+            "Shortcuts",
+            "Shortcuts-journal",
+            "DownloadMetadata",
+            "Network Action Predictor",
+            "Network Action Predictor-journal",
+            "BrowserMetrics-spare.pma"
+        };
 
         public static void RegisterFile(string path)
         {
@@ -88,14 +123,24 @@ namespace YoutubeDownloader
             // This is usually in %LOCALAPPDATA%\YoutubeDownloader\EBWebView
         }
 
-        public static void FullSystemCleanup()
+        public static void FullSystemCleanup(bool keepWebViewData = false)
         {
+            keepWebViewData = keepWebViewData || SettingsManager.Settings.KeepLoginSession;
+
             Cleanup();
+            if (!keepWebViewData)
+            {
+                DeleteDirectoryWithRetry(SettingsManager.WebViewDataFolder);
+            }
+            else
+            {
+                CleanupWebViewNonLoginData();
+            }
 
             // [속도 최적화] WebView2 캐시 전체 삭제 대신, 민감 데이터(쿠키, 세션 등)만 선택적으로 삭제
             // 이렇게 하면 브라우저 엔진 파일은 유지되어 다음 실행 속도가 획기적으로 빨라집니다.
             string webViewCache = Path.Combine(SettingsManager.UserDataFolder, "WebView2_Cache", "EBWebView");
-            if (Directory.Exists(webViewCache))
+            if (!keepWebViewData && Directory.Exists(webViewCache))
             {
                 string[] sensitiveFolders = { "Default", "Network", "Session Storage" };
                 foreach (var folder in sensitiveFolders)
@@ -113,6 +158,133 @@ namespace YoutubeDownloader
             // Optional: Clean only files related to this app if identifiable
             
             ForceMemoryCleanup();
+        }
+
+        public static void CleanupWebViewData(bool force = false)
+        {
+            if (!force && SettingsManager.Settings.KeepLoginSession) return;
+
+            DeleteDirectoryWithRetry(SettingsManager.WebViewDataFolder);
+        }
+
+        public static void CleanupWebViewNonLoginData()
+        {
+            CleanupWebViewNonLoginData(SettingsManager.WebViewDataFolder);
+            CleanupWebViewNonLoginData(Path.Combine(SettingsManager.WebViewDataFolder, "EBWebView"));
+
+            string legacyWebViewCache = Path.Combine(SettingsManager.UserDataFolder, "WebView2_Cache", "EBWebView");
+            CleanupWebViewNonLoginData(legacyWebViewCache);
+
+            ForceMemoryCleanup();
+        }
+
+        private static void CleanupWebViewNonLoginData(string rootPath)
+        {
+            if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath)) return;
+
+            DeleteCacheFoldersUnder(rootPath);
+
+            foreach (var profilePath in GetWebViewProfileFolders(rootPath))
+            {
+                DeleteCacheFoldersUnder(profilePath);
+                DeleteHistoryFilesUnder(profilePath);
+            }
+        }
+
+        private static IEnumerable<string> GetWebViewProfileFolders(string rootPath)
+        {
+            string[] directories;
+            try
+            {
+                directories = Directory.GetDirectories(rootPath);
+            }
+            catch
+            {
+                return Array.Empty<string>();
+            }
+
+            var profileFolders = new List<string>();
+            foreach (string directory in directories)
+            {
+                string name = Path.GetFileName(directory);
+                if (IsWebViewProfileFolder(name))
+                {
+                    profileFolders.Add(directory);
+                }
+            }
+
+            return profileFolders;
+        }
+
+        private static bool IsWebViewProfileFolder(string name)
+        {
+            return name.Equals("Default", StringComparison.OrdinalIgnoreCase) ||
+                   name.Equals("Guest Profile", StringComparison.OrdinalIgnoreCase) ||
+                   name.Equals("System Profile", StringComparison.OrdinalIgnoreCase) ||
+                   name.StartsWith("Profile ", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void DeleteCacheFoldersUnder(string basePath)
+        {
+            foreach (string folderName in WebViewCacheFolderNames)
+            {
+                DeleteDirectoryWithRetry(Path.Combine(basePath, folderName));
+            }
+        }
+
+        private static void DeleteHistoryFilesUnder(string profilePath)
+        {
+            foreach (string fileName in WebViewHistoryFileNames)
+            {
+                DeleteFileOrDirectoryWithRetry(Path.Combine(profilePath, fileName));
+            }
+        }
+
+        private static void DeleteDirectoryWithRetry(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return;
+
+            for (int i = 0; i < 20; i++)
+            {
+                try
+                {
+                    Directory.Delete(path, true);
+                    return;
+                }
+                catch
+                {
+                    System.Threading.Thread.Sleep(150);
+                }
+            }
+        }
+
+        private static void DeleteFileOrDirectoryWithRetry(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return;
+
+            for (int i = 0; i < 20; i++)
+            {
+                try
+                {
+                    if (File.Exists(path))
+                    {
+                        File.Delete(path);
+                        return;
+                    }
+
+                    if (Directory.Exists(path))
+                    {
+                        Directory.Delete(path, true);
+                        return;
+                    }
+
+                    return;
+                }
+                catch
+                {
+                    System.Threading.Thread.Sleep(150);
+                }
+            }
         }
 
         public static void ForceMemoryCleanup()

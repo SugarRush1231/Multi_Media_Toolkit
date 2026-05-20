@@ -63,10 +63,75 @@ namespace YoutubeDownloader
 
         private System.Windows.Forms.Timer _timer;
 
+        private DialogResult ShowCenteredMessage(string text)
+        {
+            return ShowCenteredMessage(text, FindForm()?.Text ?? "Multi Media Toolkit", MessageBoxButtons.OK, MessageBoxIcon.None);
+        }
+
+        private DialogResult ShowCenteredMessage(string text, string caption)
+        {
+            return ShowCenteredMessage(text, caption, MessageBoxButtons.OK, MessageBoxIcon.None);
+        }
+
+        private DialogResult ShowCenteredMessage(string text, string caption, MessageBoxButtons buttons)
+        {
+            return ShowCenteredMessage(text, caption, buttons, MessageBoxIcon.None);
+        }
+
+        private DialogResult ShowCenteredMessage(string text, string caption, MessageBoxButtons buttons, MessageBoxIcon icon)
+        {
+            Form? owner = FindForm();
+            if (owner == null)
+            {
+                return MessageBox.Show(text, caption, buttons, icon);
+            }
+
+            if (owner.InvokeRequired)
+            {
+                return (DialogResult)owner.Invoke(new Func<DialogResult>(() => ShowCenteredMessage(text, caption, buttons, icon)));
+            }
+
+            Rectangle ownerBounds = owner.WindowState == FormWindowState.Minimized ? owner.RestoreBounds : owner.Bounds;
+            if (owner.WindowState == FormWindowState.Maximized)
+            {
+                ownerBounds = Screen.FromControl(owner).WorkingArea;
+            }
+            if (ownerBounds.Width <= 0 || ownerBounds.Height <= 0)
+            {
+                ownerBounds = Screen.FromControl(owner).WorkingArea;
+            }
+
+            Point center = new Point(
+                ownerBounds.Left + ownerBounds.Width / 2,
+                ownerBounds.Top + ownerBounds.Height / 2);
+
+            using var anchor = new Form
+            {
+                StartPosition = FormStartPosition.Manual,
+                FormBorderStyle = FormBorderStyle.None,
+                ShowInTaskbar = false,
+                Size = new Size(1, 1),
+                Location = center,
+                Opacity = 0
+            };
+
+            try
+            {
+                anchor.Show(owner);
+                return MessageBox.Show(anchor, text, caption, buttons, icon);
+            }
+            finally
+            {
+                anchor.Close();
+            }
+        }
+
         public MiniEditor()
         {
             this.DoubleBuffered = true;
             InitializeComponent();
+            SetupFileDropTarget();
+            NormalizeMiniEditorText();
             
             this.Load += (s, e) => {
                 if (!DesignMode)
@@ -79,6 +144,37 @@ namespace YoutubeDownloader
 
             _timer = new System.Windows.Forms.Timer { Interval = 16 }; // High precision 60fps update
             _timer.Tick += Timer_Tick;
+        }
+
+        private void NormalizeMiniEditorText()
+        {
+            var title = this.Controls.OfType<Label>().FirstOrDefault(l => l.Location.X == 20 && l.Location.Y == 10);
+            if (title != null) title.Text = "\uBBF8\uB2C8 \uD3B8\uC9D1\uAE30";
+
+            txtFile.PlaceholderText = "\uC601\uC0C1 \uD30C\uC77C \uC5F4\uAE30...";
+            btnBrowse.Text = "\uC5F4\uAE30";
+            txtSeek.PlaceholderText = "\uBD84:\uCD08";
+            btnSeek.Text = "\uC774\uB3D9";
+            btnPrevSec.Text = "-5s";
+            btnPrevFrame.Text = "<";
+            btnPlayPause.Text = "\uC7AC\uC0DD/\uC815\uC9C0";
+            btnStop.Text = "\uC815\uC9C0";
+            btnNextFrame.Text = ">";
+            btnNextSec.Text = "+5s";
+            lblVolIcon.Text = "Vol";
+            cmbSaveOption.Items.Clear();
+            cmbSaveOption.Items.AddRange(new string[] { "\uC6D0\uBCF8 \uC800\uC7A5", "Premiere \uD638\uD658 (H.264)", "\uC624\uB514\uC624\uB9CC \uCD94\uCD9C (MP3)" });
+            cmbSaveOption.SelectedIndex = 0;
+            btnSave.Text = "\uC800\uC7A5";
+            lblStatus.Text = "\uC900\uBE44";
+            btnCancel.Text = "\uCDE8\uC18C";
+            lblSavePath.Text = "\uD604\uC7AC \uC800\uC7A5 \uC704\uCE58: " + (SettingsManager.Settings?.DefaultDownloadFolder ?? "");
+            btnOpenFolder.Text = "\uD3F4\uB354 \uC5F4\uAE30";
+
+            btnSave.Click -= BtnSave_Click;
+            btnSave.Click += BtnSaveClean_Click;
+            btnOpenFolder.Click -= BtnOpenFolder_Click;
+            btnOpenFolder.Click += BtnOpenFolderClean_Click;
         }
 
         private void InitializeVlc()
@@ -192,7 +288,7 @@ namespace YoutubeDownloader
                     this.BeginInvoke(new Action(() => {
                         _timer.Stop();
                         lblStatus.Text = "재생 오류 발생";
-                        MessageBox.Show("영상을 재생하는 중 오류가 발생했습니다.");
+                        ShowCenteredMessage("영상을 재생하는 중 오류가 발생했습니다.");
                     }));
                 };
             }
@@ -202,6 +298,74 @@ namespace YoutubeDownloader
         {
             if (this.InvokeRequired) this.Invoke(new MethodInvoker(action));
             else action();
+        }
+
+        private void SetupFileDropTarget()
+        {
+            txtFile.PlaceholderText = "\uC601\uC0C1 \uD30C\uC77C \uACBD\uB85C\uB97C \uC120\uD0DD \uD558\uC138\uC694.";
+
+            var overlay = new DropOverlayPanel
+            {
+                Parent = this,
+                Dock = DockStyle.Fill,
+                DropText = "\uD3B8\uC9D1\uD560 \uC601\uC0C1\uC744 \uC5EC\uAE30\uC5D0 \uB193\uC73C\uC138\uC694."
+            };
+
+            this.Controls.Add(overlay);
+            overlay.BringToFront();
+
+            void ShowOverlay(DragEventArgs e)
+            {
+                if (!TryGetDroppedFile(e, out _))
+                {
+                    e.Effect = DragDropEffects.None;
+                    return;
+                }
+
+                e.Effect = DragDropEffects.Copy;
+                overlay.Visible = true;
+                overlay.BringToFront();
+            }
+
+            void ApplyDrop(DragEventArgs e)
+            {
+                overlay.Visible = false;
+                if (!TryGetDroppedFile(e, out var filePath)) return;
+
+                txtFile.Text = filePath;
+                LoadMedia(filePath);
+            }
+
+            void Wire(Control control)
+            {
+                control.AllowDrop = true;
+                control.DragEnter += (s, e) => ShowOverlay(e);
+                control.DragOver += (s, e) => ShowOverlay(e);
+                control.DragDrop += (s, e) => ApplyDrop(e);
+
+                foreach (Control child in control.Controls)
+                {
+                    if (child == overlay) continue;
+                    Wire(child);
+                }
+            }
+
+            Wire(this);
+            overlay.DragEnter += (s, e) => ShowOverlay(e);
+            overlay.DragOver += (s, e) => ShowOverlay(e);
+            overlay.DragDrop += (s, e) => ApplyDrop(e);
+            overlay.DragLeave += (s, e) => overlay.Visible = false;
+        }
+
+        private static bool TryGetDroppedFile(DragEventArgs e, out string filePath)
+        {
+            filePath = "";
+            if (!(e.Data?.GetDataPresent(DataFormats.FileDrop) ?? false)) return false;
+            if (e.Data.GetData(DataFormats.FileDrop) is not string[] files || files.Length == 0) return false;
+            if (!File.Exists(files[0])) return false;
+
+            filePath = files[0];
+            return true;
         }
 
         private void Timer_Tick(object sender, EventArgs e)
@@ -935,11 +1099,11 @@ namespace YoutubeDownloader
             });
         }
 
-        private async void BtnSave_Click(object sender, EventArgs e)
+        private async void BtnSaveClean_Click(object? sender, EventArgs e)
         {
-            if (string.IsNullOrEmpty(txtFile.Text)) { MessageBox.Show("파일을 먼저 선택하세요."); return; }
-            if (_inMs == -1 || _outMs == -1) { MessageBox.Show("In/Out 지점을 먼저 설정하세요."); return; }
-            if (_inMs >= _outMs) { MessageBox.Show("In 지점이 Out 지점보다 늦을 수 없습니다."); return; }
+            if (string.IsNullOrEmpty(txtFile.Text)) { ShowCenteredMessage("\uD30C\uC77C\uC744 \uBA3C\uC800 \uC120\uD0DD\uD558\uC138\uC694."); return; }
+            if (_inMs == -1 || _outMs == -1) { ShowCenteredMessage("In/Out \uC9C0\uC810\uC744 \uBA3C\uC800 \uC124\uC815\uD558\uC138\uC694."); return; }
+            if (_inMs >= _outMs) { ShowCenteredMessage("In \uC9C0\uC810\uC774 Out \uC9C0\uC810\uBCF4\uB2E4 \uB2A6\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."); return; }
 
             using var sfd = new SaveFileDialog { Filter = "Video Files|*.mp4;*.mkv|Audio Files|*.mp3" };
             if (sfd.ShowDialog() != DialogResult.OK) return;
@@ -951,7 +1115,7 @@ namespace YoutubeDownloader
             btnSave.Enabled = false;
             btnCancel.Visible = true;
             btnCancel.BringToFront();
-            lblStatus.Text = "Saving...";
+            lblStatus.Text = "\uC800\uC7A5 \uC911...";
             pbProgress.Value = 0;
 
             try
@@ -962,29 +1126,50 @@ namespace YoutubeDownloader
                 string volFilter = $"-filter:a \"volume={volFactor:F2}\"";
 
                 string args = "";
-                if (cmbSaveOption.SelectedIndex == 0) // Accurate (High Quality)
+                if (cmbSaveOption.SelectedIndex == 0)
                     args = $"-ss {startTs} -t {durationTs} -i \"{inputFile}\" -c:v libx264 -crf 18 -preset slower {volFilter} -c:a aac -b:a 192k \"{outputFile}\" -y";
-                else if (cmbSaveOption.SelectedIndex == 1) // Premiere Compatible
+                else if (cmbSaveOption.SelectedIndex == 1)
                     args = $"-ss {startTs} -t {durationTs} -i \"{inputFile}\" -c:v libx264 -pix_fmt yuv420p -profile:v high -level 4.1 {volFilter} -c:a aac \"{outputFile}\" -y";
-                else // Audio Only
+                else
                     args = $"-ss {startTs} -t {durationTs} -i \"{inputFile}\" -vn {volFilter} -c:a libmp3lame -b:a 192k \"{outputFile}\" -y";
 
                 await RunFFmpegWithProgress(args, _saveCts.Token);
-                lblStatus.Text = "저장 성공!";
+                lblStatus.Text = "\uC800\uC7A5 \uC131\uACF5!";
                 if (SettingsManager.Settings.AutoOpenFolder)
                 {
                     try { Process.Start("explorer.exe", Path.GetDirectoryName(outputFile)); } catch { }
                 }
-                MessageBox.Show("영상이 성공적으로 저장되었습니다.");
+                ShowCenteredMessage("\uC601\uC0C1\uC774 \uC131\uACF5\uC801\uC73C\uB85C \uC800\uC7A5\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
             }
-            catch (OperationCanceledException) { lblStatus.Text = "취소됨"; }
-            catch (Exception ex) { lblStatus.Text = "Error"; MessageBox.Show("Export Error: " + ex.Message); }
+            catch (OperationCanceledException) { lblStatus.Text = "\uCDE8\uC18C\uB428"; }
+            catch (Exception ex) { lblStatus.Text = "\uC624\uB958"; ShowCenteredMessage("\uB0B4\uBCF4\uB0B4\uAE30 \uC624\uB958: " + ex.Message); }
             finally
             {
                 btnSave.Enabled = true;
                 btnCancel.Visible = false;
                 _saveCts = null;
             }
+        }
+
+        private void BtnOpenFolderClean_Click(object? sender, EventArgs e)
+        {
+            string path = SettingsManager.Settings?.DefaultDownloadFolder ?? "";
+            if (string.IsNullOrEmpty(path)) path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+
+            if (System.IO.Directory.Exists(path))
+            {
+                try { Process.Start("explorer.exe", path); } catch { }
+            }
+            else
+            {
+                ShowCenteredMessage("\uD3F4\uB354\uAC00 \uC874\uC7AC\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4: " + path);
+            }
+        }
+
+        private async void BtnSave_Click(object sender, EventArgs e)
+        {
+            await Task.CompletedTask;
+            BtnSaveClean_Click(sender, e);
         }
 
         private string FormatTimeFFmpeg(long ms)
@@ -1046,12 +1231,18 @@ namespace YoutubeDownloader
             }
             else
             {
-                MessageBox.Show("폴더가 존재하지 않습니다: " + path);
+                ShowCenteredMessage("폴더가 존재하지 않습니다: " + path);
             }
         }
 
         public void UpdateSavePath(string newPath)
         {
+            if (lblSavePath != null)
+            {
+                lblSavePath.Text = "현재 저장 위치: " + newPath;
+                return;
+            }
+
             if (lblSavePath != null)
                 lblSavePath.Text = "현재 저장 위치: " + newPath;
         }
