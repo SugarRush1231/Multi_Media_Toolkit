@@ -52,6 +52,7 @@ public partial class Form1 : Form
     // GitHub Update Settings 
     private const string GITHUB_USER = "SugarRush1231";
     private const string REPO_NAME = "Multi_Media_Toolkit";
+    private const string VersionArchiveUrl = "https://mmt-web.sgr970318.workers.dev/";
     private static readonly HttpClient _httpClient = new HttpClient();
     private ToolTip? _loginDownloadToolTip;
     private CheckBox? chkKeepLoginSession;
@@ -66,9 +67,20 @@ public partial class Form1 : Form
     private ComboBox? cmbYoutubeSubtitleLanguage;
     private ComboBox? cmbYtDlpSubtitleLanguage;
     private CheckBox? chkEnableWidgetMode;
+    private RoundButton? btnOpenVersionArchive;
     private Label? lblTopWidgetMode;
     private WidgetModeToggleButton? btnTopWidgetMode;
     private DownloadWidgetForm? _downloadWidgetForm;
+    private TabPage? tabVideoPicker;
+    private Label? lblVideoPickerTitle;
+    private Label? lblVideoPickerHint;
+    private ListView? lvVideoPicker;
+    private ImageList? imgVideoPickerThumbs;
+    private RoundButton? btnVideoPickerDownloadAll;
+    private RoundButton? btnVideoPickerDownloadSelected;
+    private RoundButton? btnVideoPickerCancel;
+    private List<DetectedVideoItem> _detectedVideoItems = new();
+    private bool _returnToWidgetAfterVideoPick;
     private bool _updatingWidgetModeCheckbox;
     private IntPtr _lastWidgetTargetWindow = IntPtr.Zero;
     private static readonly HashSet<string> WidgetBrowserProcessNames = new(StringComparer.OrdinalIgnoreCase)
@@ -232,7 +244,9 @@ public partial class Form1 : Form
         ConfigureDownloadRuleSettings();
         ConfigureWidgetModeSettings();
         NormalizeKoreanUiText(initialPath);
+        ConfigureVersionArchiveButton();
         ConfigureTopWidgetModeButton();
+        ConfigureVideoPickerTab();
 
         // Ensure initially correct positions
         btnOpenYtDlpFolder.Left = lblYtDlpSavePath.Right + 5;
@@ -302,6 +316,8 @@ public partial class Form1 : Form
             }
             else
             {
+                SettingsManager.Settings.LastSeenVersion = CURR_VERSION;
+                SettingsManager.Save();
 
                 _ = Task.Run(async () => {
 
@@ -312,8 +328,6 @@ public partial class Form1 : Form
                         ShowCenteredMessage(changelog, title, MessageBoxButtons.OK, MessageBoxIcon.Information);
                         
                         // 버전 공지 확인 후 다음 실행부터 숨김
-                        SettingsManager.Settings.LastSeenVersion = CURR_VERSION;
-                        SettingsManager.Save();
                     });
                 });
             }
@@ -764,7 +778,8 @@ public partial class Form1 : Form
 
     private void ConfigureDownloadRuleSettings()
     {
-        tabSettings.AutoScroll = true;
+        tabSettings.AutoScroll = false;
+        tabSettings.AutoScrollMinSize = Size.Empty;
 
         var group = tabSettings.Controls.Find("grpDownloadRules", false).FirstOrDefault() as GroupBox;
         if (group == null)
@@ -889,14 +904,15 @@ public partial class Form1 : Form
         btnSaveSettings.Location = new Point(20, 545);
         btnCheckUpdate.Location = new Point(20, 605);
         lblAbout.Location = new Point(20, 660);
-        tabSettings.AutoScrollMinSize = new Size(0, 760);
+        tabSettings.AutoScrollMinSize = Size.Empty;
 
         ReloadDownloadRuleSettingsUI();
     }
 
     private void ConfigureWidgetModeSettings()
     {
-        tabSettings.AutoScroll = true;
+        tabSettings.AutoScroll = false;
+        tabSettings.AutoScrollMinSize = Size.Empty;
 
         var group = tabSettings.Controls.Find("grpWidgetMode", false).FirstOrDefault() as GroupBox;
         if (group == null)
@@ -938,7 +954,7 @@ public partial class Form1 : Form
         btnSaveSettings.Location = new Point(20, 545);
         btnCheckUpdate.Location = new Point(20, 605);
         lblAbout.Location = new Point(20, 660);
-        tabSettings.AutoScrollMinSize = new Size(0, 760);
+        tabSettings.AutoScrollMinSize = Size.Empty;
 
         group.Visible = false;
         ReloadWidgetModeSettingsUI();
@@ -984,6 +1000,154 @@ public partial class Form1 : Form
 
         panelSidebar.Resize += (s, e) => PositionTopWidgetModeButton();
         PositionTopWidgetModeButton();
+    }
+
+    private void ConfigureVideoPickerTab()
+    {
+        if (tabVideoPicker != null) return;
+
+        tabVideoPicker = new TabPage
+        {
+            Name = "tabVideoPicker",
+            Text = "\uC601\uC0C1 \uC120\uD0DD",
+            BackColor = Color.FromArgb(250, 250, 250),
+            Padding = new Padding(24)
+        };
+
+        lblVideoPickerTitle = new Label
+        {
+            Text = "\uBC1B\uC744 \uC601\uC0C1\uC744 \uC120\uD0DD\uD574 \uC8FC\uC138\uC694",
+            AutoSize = true,
+            Location = new Point(30, 30),
+            Font = new Font("Segoe UI", 18F, FontStyle.Bold),
+            ForeColor = Color.Black
+        };
+
+        lblVideoPickerHint = new Label
+        {
+            Text = "\uD55C \uD398\uC774\uC9C0\uC5D0 \uC5EC\uB7EC \uC601\uC0C1\uC774 \uAC10\uC9C0\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uC6D0\uD558\uB294 \uC601\uC0C1\uC744 \uACE0\uB974\uAC70\uB098 \uBAA8\uB450 \uB2E4\uC6B4\uB85C\uB4DC\uD558\uC138\uC694.",
+            AutoSize = false,
+            Location = new Point(32, 72),
+            Size = new Size(760, 36),
+            Font = new Font("Segoe UI", 10F),
+            ForeColor = Color.FromArgb(70, 80, 95)
+        };
+
+        btnVideoPickerDownloadAll = new RoundButton
+        {
+            Text = "\uBAA8\uB450 \uB2E4\uC6B4\uB85C\uB4DC",
+            Size = new Size(150, 38),
+            Location = new Point(32, 122),
+            BackColor = Color.FromArgb(18, 148, 204),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            BorderRadius = 14
+        };
+        btnVideoPickerDownloadAll.FlatAppearance.BorderSize = 0;
+        btnVideoPickerDownloadAll.Click += BtnVideoPickerDownloadAll_Click;
+
+        btnVideoPickerDownloadSelected = new RoundButton
+        {
+            Text = "\uC120\uD0DD \uB2E4\uC6B4\uB85C\uB4DC",
+            Size = new Size(150, 38),
+            Location = new Point(192, 122),
+            BackColor = Color.FromArgb(16, 132, 118),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            BorderRadius = 14
+        };
+        btnVideoPickerDownloadSelected.FlatAppearance.BorderSize = 0;
+        btnVideoPickerDownloadSelected.Click += BtnVideoPickerDownloadSelected_Click;
+
+        btnVideoPickerCancel = new RoundButton
+        {
+            Text = "\uB3CC\uC544\uAC00\uAE30",
+            Size = new Size(120, 38),
+            Location = new Point(352, 122),
+            BackColor = Color.FromArgb(239, 244, 248),
+            ForeColor = Color.FromArgb(51, 65, 85),
+            FlatStyle = FlatStyle.Flat,
+            BorderRadius = 14
+        };
+        btnVideoPickerCancel.FlatAppearance.BorderSize = 0;
+        btnVideoPickerCancel.Click += (s, e) => CloseVideoPicker(returnToWidget: _returnToWidgetAfterVideoPick);
+
+        imgVideoPickerThumbs = new ImageList
+        {
+            ColorDepth = ColorDepth.Depth32Bit,
+            ImageSize = new Size(96, 54)
+        };
+
+        lvVideoPicker = new ListView
+        {
+            Location = new Point(32, 178),
+            Size = new Size(820, 390),
+            Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+            View = View.Details,
+            FullRowSelect = true,
+            MultiSelect = true,
+            HideSelection = false,
+            SmallImageList = imgVideoPickerThumbs,
+            Font = new Font("Segoe UI", 9.5F),
+            BackColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+        lvVideoPicker.Columns.Add("\uC378\uB124\uC77C / \uC81C\uBAA9", 500);
+        lvVideoPicker.Columns.Add("\uAE38\uC774", 90);
+        lvVideoPicker.Columns.Add("URL", 220);
+        lvVideoPicker.DoubleClick += BtnVideoPickerDownloadSelected_Click;
+
+        tabVideoPicker.Controls.Add(lblVideoPickerTitle);
+        tabVideoPicker.Controls.Add(lblVideoPickerHint);
+        tabVideoPicker.Controls.Add(btnVideoPickerDownloadAll);
+        tabVideoPicker.Controls.Add(btnVideoPickerDownloadSelected);
+        tabVideoPicker.Controls.Add(btnVideoPickerCancel);
+        tabVideoPicker.Controls.Add(lvVideoPicker);
+        tabControlMain.Controls.Add(tabVideoPicker);
+    }
+
+    private void ConfigureVersionArchiveButton()
+    {
+        if (btnOpenVersionArchive == null)
+        {
+            btnOpenVersionArchive = new RoundButton
+            {
+                Name = "btnOpenVersionArchive",
+                Text = "\uB2E4\uB978 \uBC84\uC804 \uBC1B\uAE30",
+                Size = new Size(145, 34),
+                BorderRadius = 14,
+                BackColor = Color.FromArgb(241, 245, 249),
+                ForeColor = Color.FromArgb(51, 65, 85),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                Anchor = AnchorStyles.Left | AnchorStyles.Bottom
+            };
+            btnOpenVersionArchive.FlatAppearance.BorderSize = 0;
+            btnOpenVersionArchive.Click += BtnOpenVersionArchive_Click;
+            tabSettings.Controls.Add(btnOpenVersionArchive);
+
+            var tip = new ToolTip { ShowAlways = true };
+            tip.SetToolTip(btnOpenVersionArchive, "\uC774\uC804 \uBC84\uC804\uC774\uB098 \uD14C\uC2A4\uD2B8 \uBC84\uC804\uC744 \uB2E4\uC6B4\uB85C\uB4DC \uD398\uC774\uC9C0\uC5D0\uC11C \uC120\uD0DD\uD574 \uBC1B\uC2B5\uB2C8\uB2E4.");
+        }
+
+        btnOpenVersionArchive.Location = new Point(20, Math.Max(420, tabSettings.ClientSize.Height - 54));
+        btnOpenVersionArchive.BringToFront();
+    }
+
+    private void BtnOpenVersionArchive_Click(object? sender, EventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(VersionArchiveUrl) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            ShowCenteredMessage(
+                "\uBC84\uC804 \uBCF4\uAD00\uD568\uC744 \uC5F4\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.\n\n" + ex.Message,
+                "\uBC84\uC804 \uBCF4\uAD00\uD568",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
     }
 
     private void PositionTopWidgetModeButton()
@@ -1384,7 +1548,7 @@ public partial class Form1 : Form
             "1080p" => "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
             "720p" => "bestvideo[height<=720]+bestaudio/best[height<=720]",
             "MP3" => "best_mp3",
-            _ => ""
+            _ => "bestvideo*+bestaudio/best"
         };
     }
 
@@ -1901,10 +2065,12 @@ public partial class Form1 : Form
         }
     }
 
-    private bool IsYtDlpUrlInFlight(string url)
+    private bool IsYtDlpUrlInFlight(string url, int playlistItemIndex = 0)
     {
         string normalizedUrl = NormalizeYouTubeSingleVideoUrl(url);
-        bool SameUrl(YtDlpDownloadJob job) => string.Equals(NormalizeYouTubeSingleVideoUrl(job.Url), normalizedUrl, StringComparison.OrdinalIgnoreCase);
+        bool SameUrl(YtDlpDownloadJob job) =>
+            job.PlaylistItemIndex == playlistItemIndex &&
+            string.Equals(NormalizeYouTubeSingleVideoUrl(job.Url), normalizedUrl, StringComparison.OrdinalIgnoreCase);
 
         if (_ytDlpDownloadQueue.Any(SameUrl)) return true;
         lock (_ytDlpQueueLock)
@@ -2145,6 +2311,370 @@ public partial class Form1 : Form
         SettingsManager.Save();
     }
 
+    private void ShowVideoPickerFromWidget(string sourceUrl, List<DetectedVideoItem> items)
+    {
+        _downloadWidgetForm?.SetProgress(null);
+        _downloadWidgetForm?.ShowToast("\uC5EC\uB7EC \uC601\uC0C1\uC744 \uCC3E\uC558\uC2B5\uB2C8\uB2E4.");
+        ShowMainFromWidget();
+        _returnToWidgetAfterVideoPick = true;
+        ShowVideoPicker(sourceUrl, items);
+    }
+
+    private void ShowVideoPicker(string sourceUrl, List<DetectedVideoItem> items)
+    {
+        ConfigureVideoPickerTab();
+        _detectedVideoItems = items;
+
+        if (lblVideoPickerHint != null)
+        {
+            lblVideoPickerHint.Text = $"{items.Count}\uAC1C\uC758 \uC601\uC0C1\uC774 \uAC10\uC9C0\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uC6D0\uD558\uB294 \uC601\uC0C1\uC744 \uACE0\uB974\uAC70\uB098 \uBAA8\uB450 \uB2E4\uC6B4\uB85C\uB4DC\uD558\uC138\uC694.";
+        }
+
+        imgVideoPickerThumbs?.Images.Clear();
+        lvVideoPicker?.Items.Clear();
+
+        if (lvVideoPicker != null && imgVideoPickerThumbs != null)
+        {
+            for (int i = 0; i < items.Count; i++)
+            {
+                var item = items[i];
+                imgVideoPickerThumbs.Images.Add(CreateVideoPickerPlaceholder(i + 1));
+
+                var row = new ListViewItem(item.Title, i)
+                {
+                    Tag = item
+                };
+                row.SubItems.Add(item.Duration);
+                row.SubItems.Add(item.Url);
+                lvVideoPicker.Items.Add(row);
+            }
+
+            if (lvVideoPicker.Items.Count > 0) lvVideoPicker.Items[0].Selected = true;
+        }
+
+        tabControlMain.SelectedTab = tabVideoPicker;
+        UpdateTabStyles(btnTabYtDlp);
+        _ = LoadVideoPickerThumbnailsAsync(items);
+    }
+
+    private async Task LoadVideoPickerThumbnailsAsync(List<DetectedVideoItem> items)
+    {
+        if (imgVideoPickerThumbs == null || lvVideoPicker == null) return;
+
+        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+        for (int i = 0; i < items.Count; i++)
+        {
+            string thumbnail = items[i].ThumbnailUrl;
+            if (string.IsNullOrWhiteSpace(thumbnail)) continue;
+
+            try
+            {
+                byte[] bytes = await client.GetByteArrayAsync(thumbnail);
+                using var ms = new MemoryStream(bytes);
+                using var image = Image.FromStream(ms);
+                var thumb = new Bitmap(imgVideoPickerThumbs.ImageSize.Width, imgVideoPickerThumbs.ImageSize.Height);
+                using (var g = Graphics.FromImage(thumb))
+                {
+                    g.Clear(Color.FromArgb(241, 245, 249));
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    Rectangle bounds = GetZoomBounds(image.Size, new Rectangle(Point.Empty, thumb.Size));
+                    g.DrawImage(image, bounds);
+                }
+
+                if (IsDisposed || imgVideoPickerThumbs.Images.Count <= i) return;
+                imgVideoPickerThumbs.Images[i] = thumb;
+                lvVideoPicker.Invalidate();
+            }
+            catch { }
+        }
+    }
+
+    private static Bitmap CreateVideoPickerPlaceholder(int index)
+    {
+        var bitmap = new Bitmap(96, 54);
+        using var g = Graphics.FromImage(bitmap);
+        g.Clear(Color.FromArgb(226, 232, 240));
+        using var brush = new SolidBrush(Color.FromArgb(100, 116, 139));
+        using var font = new Font("Segoe UI", 10F, FontStyle.Bold);
+        string text = index.ToString();
+        SizeF size = g.MeasureString(text, font);
+        g.DrawString(text, font, brush, (bitmap.Width - size.Width) / 2, (bitmap.Height - size.Height) / 2);
+        return bitmap;
+    }
+
+    private static Rectangle GetZoomBounds(Size imageSize, Rectangle bounds)
+    {
+        if (imageSize.Width <= 0 || imageSize.Height <= 0 || bounds.Width <= 0 || bounds.Height <= 0) return bounds;
+        float ratio = Math.Min((float)bounds.Width / imageSize.Width, (float)bounds.Height / imageSize.Height);
+        int width = Math.Max(1, (int)(imageSize.Width * ratio));
+        int height = Math.Max(1, (int)(imageSize.Height * ratio));
+        return new Rectangle(
+            bounds.Left + (bounds.Width - width) / 2,
+            bounds.Top + (bounds.Height - height) / 2,
+            width,
+            height);
+    }
+
+    private async Task<List<DetectedVideoItem>> DetectVideoCandidatesForSelectionAsync(string url)
+    {
+        var result = new List<DetectedVideoItem>();
+
+        if (!IsHttpUrl(url) || LooksLikeYouTubeInput(url))
+            return result;
+
+        string ytDlpPath = SettingsManager.GetYtDlpPath();
+        if (string.IsNullOrWhiteSpace(ytDlpPath) || !File.Exists(ytDlpPath))
+            return result;
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(18));
+            using var process = new Process();
+            process.StartInfo = new ProcessStartInfo
+            {
+                FileName = ytDlpPath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+            process.StartInfo.ArgumentList.Add("--ignore-config");
+            process.StartInfo.ArgumentList.Add("--flat-playlist");
+            process.StartInfo.ArgumentList.Add("--dump-single-json");
+            process.StartInfo.ArgumentList.Add("--no-warnings");
+            process.StartInfo.ArgumentList.Add("--encoding");
+            process.StartInfo.ArgumentList.Add("utf-8");
+            process.StartInfo.ArgumentList.Add(url);
+
+            process.Start();
+            Task<string> outputTask = process.StandardOutput.ReadToEndAsync();
+            Task<string> errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync(cts.Token);
+
+            string json = await outputTask;
+            _ = await errorTask;
+            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(json))
+                return result;
+
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("entries", out var entries) || entries.ValueKind != JsonValueKind.Array)
+                return result;
+
+            int index = 1;
+            foreach (var entry in entries.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object) continue;
+
+                string itemUrl = GetDetectedVideoUrl(entry);
+                if (!IsHttpUrl(itemUrl)) continue;
+
+                string title = GetJsonString(entry, "title", "fulltitle", "id") ?? $"\uC601\uC0C1 {index}";
+                string duration = GetJsonString(entry, "duration_string") ?? FormatDetectedDuration(entry);
+                string thumbnail = GetJsonString(entry, "thumbnail") ?? GetLastThumbnailUrl(entry);
+
+                result.Add(new DetectedVideoItem
+                {
+                    Title = title.Trim(),
+                    Url = itemUrl.Trim(),
+                    Duration = duration,
+                    ThumbnailUrl = thumbnail,
+                    SourcePageUrl = url,
+                    PlaylistIndex = GetJsonInt(entry, "playlist_index")
+                });
+                index++;
+            }
+        }
+        catch
+        {
+            return new List<DetectedVideoItem>();
+        }
+
+        return result
+            .GroupBy(x => x.Url, StringComparer.OrdinalIgnoreCase)
+            .Select(x => x.First())
+            .Take(50)
+            .ToList();
+    }
+
+    private static string? GetJsonString(JsonElement element, params string[] names)
+    {
+        foreach (string name in names)
+        {
+            if (!element.TryGetProperty(name, out var value)) continue;
+            if (value.ValueKind == JsonValueKind.String)
+            {
+                string? text = value.GetString();
+                if (!string.IsNullOrWhiteSpace(text)) return text;
+            }
+            else if (value.ValueKind == JsonValueKind.Number)
+            {
+                return value.ToString();
+            }
+        }
+
+        return null;
+    }
+
+    private static int GetJsonInt(JsonElement element, string name)
+    {
+        if (!element.TryGetProperty(name, out var value)) return 0;
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out int number)) return number;
+        if (value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out number)) return number;
+        return 0;
+    }
+
+    private static string GetDetectedVideoUrl(JsonElement entry)
+    {
+        string itemUrl = GetJsonString(entry, "url") ?? "";
+        if (IsHttpUrl(itemUrl)) return itemUrl;
+
+        itemUrl = GetFirstNestedUrl(entry, "requested_downloads");
+        if (IsHttpUrl(itemUrl)) return itemUrl;
+
+        itemUrl = GetFirstNestedUrl(entry, "formats");
+        if (IsHttpUrl(itemUrl)) return itemUrl;
+
+        itemUrl = GetJsonString(entry, "webpage_url") ?? "";
+        return IsHttpUrl(itemUrl) ? itemUrl : "";
+    }
+
+    private static string GetFirstNestedUrl(JsonElement entry, string propertyName)
+    {
+        if (!entry.TryGetProperty(propertyName, out var items) || items.ValueKind != JsonValueKind.Array)
+            return "";
+
+        foreach (var item in items.EnumerateArray())
+        {
+            string? url = GetJsonString(item, "url");
+            if (IsHttpUrl(url ?? "")) return url!;
+        }
+
+        return "";
+    }
+
+    private static string GetLastThumbnailUrl(JsonElement entry)
+    {
+        if (!entry.TryGetProperty("thumbnails", out var thumbnails) || thumbnails.ValueKind != JsonValueKind.Array)
+            return "";
+
+        string last = "";
+        foreach (var thumbnail in thumbnails.EnumerateArray())
+        {
+            string? url = GetJsonString(thumbnail, "url");
+            if (!string.IsNullOrWhiteSpace(url)) last = url;
+        }
+
+        return last;
+    }
+
+    private static string FormatDetectedDuration(JsonElement entry)
+    {
+        if (!entry.TryGetProperty("duration", out var duration) || duration.ValueKind != JsonValueKind.Number)
+            return "-";
+
+        double seconds = duration.TryGetDouble(out double value) ? value : 0;
+        if (seconds <= 0) return "-";
+
+        var time = TimeSpan.FromSeconds(seconds);
+        return time.TotalHours >= 1
+            ? $"{(int)time.TotalHours}:{time.Minutes:00}:{time.Seconds:00}"
+            : $"{time.Minutes:00}:{time.Seconds:00}";
+    }
+
+    private void BtnVideoPickerDownloadAll_Click(object? sender, EventArgs e)
+    {
+        QueueDetectedVideoItems(_detectedVideoItems);
+    }
+
+    private void BtnVideoPickerDownloadSelected_Click(object? sender, EventArgs e)
+    {
+        if (lvVideoPicker == null || lvVideoPicker.SelectedItems.Count == 0)
+        {
+            ShowCenteredMessage(
+                "\uB2E4\uC6B4\uB85C\uB4DC\uD560 \uC601\uC0C1\uC744 \uC120\uD0DD\uD574 \uC8FC\uC138\uC694.",
+                "\uC601\uC0C1 \uC120\uD0DD",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        var selected = lvVideoPicker.SelectedItems
+            .Cast<ListViewItem>()
+            .Select(item => item.Tag as DetectedVideoItem)
+            .Where(item => item != null)
+            .Cast<DetectedVideoItem>()
+            .ToList();
+
+        QueueDetectedVideoItems(selected);
+    }
+
+    private void QueueDetectedVideoItems(IEnumerable<DetectedVideoItem> items)
+    {
+        var list = items
+            .Where(item => item != null && IsHttpUrl(item.Url))
+            .GroupBy(item => item.Url, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+
+        if (list.Count == 0)
+        {
+            ShowCenteredMessage(
+                "\uB2E4\uC6B4\uB85C\uB4DC\uD560 \uC601\uC0C1 \uC8FC\uC18C\uB97C \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",
+                "\uC601\uC0C1 \uC120\uD0DD",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        int added = 0;
+        string lastRejectReason = "";
+        foreach (var item in list)
+        {
+            string queueUrl = item.PlaylistIndex > 0 && IsHttpUrl(item.SourcePageUrl) ? item.SourcePageUrl : item.Url;
+            if (EnqueueYtDlpDownload(queueUrl, allowFolderPrompt: false, out string rejectReason, item.PlaylistIndex, item.Title))
+            {
+                added++;
+            }
+            else if (!string.IsNullOrWhiteSpace(rejectReason))
+            {
+                lastRejectReason = rejectReason;
+            }
+        }
+
+        if (added > 0)
+        {
+            lblYtDlpStatus.Text = $"{added}\uAC1C\uC758 \uC601\uC0C1\uC744 \uB300\uAE30\uC5F4\uC5D0 \uCD94\uAC00\uD588\uC2B5\uB2C8\uB2E4.";
+            CloseVideoPicker(returnToWidget: _returnToWidgetAfterVideoPick);
+            return;
+        }
+
+        ShowCenteredMessage(
+            string.IsNullOrWhiteSpace(lastRejectReason)
+                ? "\uB300\uAE30\uC5F4\uC5D0 \uCD94\uAC00\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."
+                : lastRejectReason,
+            "\uC601\uC0C1 \uC120\uD0DD",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning);
+    }
+
+    private void CloseVideoPicker(bool returnToWidget)
+    {
+        _returnToWidgetAfterVideoPick = false;
+        _detectedVideoItems.Clear();
+        lvVideoPicker?.Items.Clear();
+        imgVideoPickerThumbs?.Images.Clear();
+
+        SelectMainTab(btnTabYtDlp, tabYtDlp);
+
+        if (returnToWidget)
+        {
+            BeginInvoke(new Action(() => EnterWidgetMode(saveSetting: false)));
+        }
+    }
+
     private async Task HandleWidgetDownloadAsync()
     {
         try
@@ -2160,6 +2690,7 @@ public partial class Form1 : Form
     private async Task HandleWidgetDownloadAsyncCore()
     {
         _downloadWidgetForm?.SetBusy(true);
+        _downloadWidgetForm?.SetProgress(null);
         _downloadWidgetForm?.SetStatus("현재 브라우저 주소 확인 중...");
         RememberWidgetTargetWindow();
         string text = await TryGetActivePageUrlAsync();
@@ -2167,26 +2698,57 @@ public partial class Form1 : Form
 
         if (!IsHttpUrl(text))
         {
+            _downloadWidgetForm?.SetProgress(null);
             _downloadWidgetForm?.SetStatus("다운로드할 페이지를 브라우저에서 연 뒤 다시 눌러 주세요. 감지가 안 되면 URL을 복사한 뒤 눌러 주세요.");
             return;
         }
 
+        _downloadWidgetForm?.SetProgress(0);
         _downloadWidgetForm?.SetStatus("다운로드 대기열에 추가 중...");
 
         try
         {
+            if (LooksLikeYouTubeInput(text))
+            {
+                bool youtubeWasRunning = _isDownloading || !_downloadQueue.IsEmpty;
+                int itemCountBefore = lvQueue.Items.Count;
+                await RouteToYoutubeDownloadAsync(text);
+                if (lvQueue.Items.Count <= itemCountBefore)
+                {
+                    _downloadWidgetForm?.SetProgress(null);
+                    _downloadWidgetForm?.SetStatus("\uC601\uC0C1 \uC815\uBCF4\uB97C \uAC00\uC838\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. \uC2E4\uC81C \uC601\uC0C1 \uD398\uC774\uC9C0\uC5D0\uC11C \uB2E4\uC2DC \uB20C\uB7EC\uC8FC\uC138\uC694.");
+                    _downloadWidgetForm?.ShowToast("\uC601\uC0C1\uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.");
+                    return;
+                }
+                _downloadWidgetForm?.ShowToast("\uB300\uAE30\uC5F4\uC5D0 \uCD94\uAC00\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
+                _downloadWidgetForm?.SetStatus(youtubeWasRunning
+                    ? "\uB300\uAE30\uC5F4\uC5D0 \uCD94\uAC00\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uC55E \uC791\uC5C5\uC774 \uB05D\uB098\uBA74 \uC21C\uC11C\uB300\uB85C \uB2E4\uC6B4\uB85C\uB4DC\uD569\uB2C8\uB2E4."
+                    : "\uC720\uD29C\uBE0C \uB2E4\uC6B4\uB85C\uB4DC\uB97C \uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4.");
+                return;
+            }
+
+            var detectedItems = await DetectVideoCandidatesForSelectionAsync(text);
+            if (detectedItems.Count > 1)
+            {
+                ShowVideoPickerFromWidget(text, detectedItems);
+                return;
+            }
+
             bool wasRunning = _isYtDlpQueueRunning || !_ytDlpDownloadQueue.IsEmpty;
             if (!EnqueueYtDlpDownload(text, allowFolderPrompt: false, out string rejectReason))
             {
                 if (!string.IsNullOrWhiteSpace(rejectReason))
                 {
+                    _downloadWidgetForm?.SetProgress(null);
                     _downloadWidgetForm?.SetStatus(rejectReason);
                     return;
                 }
+                _downloadWidgetForm?.SetProgress(null);
                 _downloadWidgetForm?.SetStatus("대기열에 추가하지 못했습니다. 앱을 열어 저장 위치를 확인해 주세요.");
                 return;
             }
 
+            _downloadWidgetForm?.ShowToast("\uB300\uAE30\uC5F4\uC5D0 \uCD94\uAC00\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
             _downloadWidgetForm?.SetStatus(wasRunning
                 ? "대기열에 추가했습니다. 앞 작업이 끝나면 순서대로 다운로드합니다."
                 : "다운로드를 시작했습니다.");
@@ -2194,6 +2756,7 @@ public partial class Form1 : Form
         catch (Exception ex)
         {
             ReportError($"위젯 다운로드 추가 실패 | URL: {text}", ex);
+            _downloadWidgetForm?.SetProgress(null);
             _downloadWidgetForm?.SetStatus("대기열 추가 실패. 앱을 열어 오류 내용을 확인해 주세요.");
         }
     }
@@ -2832,11 +3395,11 @@ public partial class Form1 : Form
         return EnqueueYtDlpDownload(url, allowFolderPrompt, out _);
     }
 
-    private bool EnqueueYtDlpDownload(string url, bool allowFolderPrompt, out string rejectReason)
+    private bool EnqueueYtDlpDownload(string url, bool allowFolderPrompt, out string rejectReason, int playlistItemIndex = 0, string preferredTitle = "")
     {
         rejectReason = "";
         url = NormalizeYouTubeSingleVideoUrl(url);
-        if (IsYtDlpUrlInFlight(url))
+        if (IsYtDlpUrlInFlight(url, playlistItemIndex))
         {
             rejectReason = "이미 다운로드 중인 URL입니다. 완료된 뒤 다시 누르면 새 파일로 받을 수 있습니다.";
             lblYtDlpStatus.Text = rejectReason;
@@ -2879,7 +3442,8 @@ public partial class Form1 : Form
             SubtitleLanguagePreset = GetSelectedSubtitlePreset(cmbYtDlpSubtitleLanguage),
             FormatSelector = GetYtDlpFormatForDefaultQuality(),
             OutputNameTemplate = BuildYtDlpOutputNameTemplate(GetSiteNameFromUrl(url)),
-            PreferredTitle = _loginBrowserDownloadTitle,
+            PreferredTitle = string.IsNullOrWhiteSpace(preferredTitle) ? _loginBrowserDownloadTitle : preferredTitle,
+            PlaylistItemIndex = playlistItemIndex,
             UseXPrivateMode = tglXPrivateMode.Checked,
             UseInstaPrivateMode = tglInstaPrivateMode.Checked,
             UseLoginBrowserCookies = _isLoginBrowserMode || ShouldUseLoginBrowserCookiesForUrl(url),
@@ -2933,6 +3497,7 @@ public partial class Form1 : Form
             if (_ytDlpDownloadQueue.IsEmpty)
             {
                 btnYtDlpRun.Text = YtDlpStartButtonText;
+                _downloadWidgetForm?.SetBusy(false);
                 lblYtDlpStatus.Text = "웹사이트 다운로드 대기열 처리가 완료되었습니다.";
             }
             else
@@ -2960,6 +3525,9 @@ public partial class Form1 : Form
 
             try
             {
+                _downloadWidgetForm?.SetBusy(true);
+                _downloadWidgetForm?.SetProgress(0);
+                _downloadWidgetForm?.ShowToast("\uB2E4\uC6B4\uB85C\uB4DC\uAC00 \uC2DC\uC791\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
                 btnYtDlpCancel.Enabled = true;
                 UpdateYtDlpJobStatus(job, "준비 중...");
                 await DownloadYtDlpQueueJobAsync(job);
@@ -2984,8 +3552,6 @@ public partial class Form1 : Form
 
         try
         {
-            _ = SendHeartbeatReportAsync("\uC6F9\uC0AC\uC774\uD2B8 \uB2E4\uC6B4\uB85C\uB4DC \uC2DC\uC791", "\uC6F9\uC0AC\uC774\uD2B8 \uB2E4\uC6B4\uB85C\uB4DC \uB300\uAE30\uC5F4\uC5D0\uC11C \uC791\uC5C5\uC744 \uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4.");
-
             _lastYtDlpPct = -1;
             _ytDlpCts = job.JobCts;
             UpdateYtDlpJobStatus(job, "yt-dlp 확인 중...");
@@ -3007,7 +3573,8 @@ public partial class Form1 : Form
                 SubtitleLanguages = GetSubtitleLanguageArgument(job.SubtitleLanguagePreset),
                 FormatSelector = job.FormatSelector,
                 OutputNameTemplate = job.OutputNameTemplate,
-                PreferredTitle = job.PreferredTitle
+                PreferredTitle = job.PreferredTitle,
+                PlaylistItemIndex = job.PlaylistItemIndex
             };
 
             downloader.OnProgressChanged += progress =>
@@ -3145,6 +3712,9 @@ public partial class Form1 : Form
             string successMsg = "다운로드 완료! 아래 '폴더 열기'를 눌러 폴더를 여세요.";
             lblYtDlpStatus.Text = successMsg;
             pbYtDlp.Value = 100;
+            _downloadWidgetForm?.SetProgress(100);
+            _downloadWidgetForm?.SetStatus("\uB2E4\uC6B4\uB85C\uB4DC \uC644\uB8CC");
+            _downloadWidgetForm?.ShowToast("\uB2E4\uC6B4\uB85C\uB4DC\uAC00 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
             if (job.UseXPrivateMode || job.UseInstaPrivateMode || job.UseLoginBrowserCookies)
             {
                 lblXStatus.Text = successMsg;
@@ -3172,11 +3742,13 @@ public partial class Form1 : Form
             else if (lowerUrlSuccess.Contains("youtube") || lowerUrlSuccess.Contains("youtu.be")) platformSuccess = "YouTube(범용)";
 
             LogDownload(BuildDownloadHistoryEntry(platformSuccess, job.PreferredTitle, finalFilePath));
-            LogDownload(BuildDownloadHistoryEntry(platformSuccess, _loginBrowserDownloadTitle, finalFilePath));
             LogUsage(platformSuccess);
         }
         catch (OperationCanceledException)
         {
+            _downloadWidgetForm?.SetProgress(null);
+            _downloadWidgetForm?.SetBusy(false);
+            _downloadWidgetForm?.ShowToast("\uB2E4\uC6B4\uB85C\uB4DC\uAC00 \uCDE8\uC18C\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
             UpdateYtDlpJobStatus(job, "취소됨");
             lblYtDlpStatus.Text = "다운로드가 취소되었습니다.";
             if (job.UseXPrivateMode || job.UseInstaPrivateMode || job.UseLoginBrowserCookies) lblXStatus.Text = "다운로드가 취소되었습니다.";
@@ -3184,6 +3756,9 @@ public partial class Form1 : Form
         }
         catch (Exception ex)
         {
+            _downloadWidgetForm?.SetProgress(null);
+            _downloadWidgetForm?.SetBusy(false);
+            _downloadWidgetForm?.ShowToast("\uB2E4\uC6B4\uB85C\uB4DC\uAC00 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.");
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
             bool ytDlpExists = File.Exists(Path.Combine(baseDir, "yt-dlp.exe"));
             bool ffmpegExists = File.Exists(Path.Combine(baseDir, "ffmpeg.exe"));
@@ -3284,9 +3859,6 @@ public partial class Form1 : Form
 
         try
         {
-
-            _ = SendHeartbeatReportAsync("\uC2DC\uC2A4\uD15C \uAC00\uB3D9", "\uC790\uB3D9 \uBCF4\uACE0 \uC2DC\uC2A4\uD15C\uC774 \uD65C\uC131\uD654\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
-
             // Use default folder from settings if available
             string savePath = GetDownloadSaveDirectory(url, SettingsManager.Settings.DefaultVideoQuality == "MP3");
             if (string.IsNullOrWhiteSpace(savePath) || !Directory.Exists(savePath))
@@ -3534,6 +4106,8 @@ public partial class Form1 : Form
         this.Invoke((MethodInvoker)delegate {
             pbYtDlp.Value = pct;
             lblYtDlpStatus.Text = msg;
+            _downloadWidgetForm?.SetProgress(pct);
+            _downloadWidgetForm?.SetStatus(msg);
             
             if (tglXPrivateMode.Checked || tglInstaPrivateMode.Checked || _isLoginBrowserMode)
             {
@@ -3718,6 +4292,10 @@ public partial class Form1 : Form
                     continue;
                 
                 _activeJobs.Add(job);
+                _downloadWidgetForm?.SetBusy(true);
+                _downloadWidgetForm?.SetProgress(0);
+                _downloadWidgetForm?.SetStatus("\uC720\uD29C\uBE0C \uB2E4\uC6B4\uB85C\uB4DC \uC2DC\uC791");
+                _downloadWidgetForm?.ShowToast("\uB2E4\uC6B4\uB85C\uB4DC\uAC00 \uC2DC\uC791\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
                 job.ListViewItem.SubItems[2].Text = "준비 중...";
                 lblStatus.Text = $"진행 중: {job.Video.Title}";
 
@@ -3737,6 +4315,8 @@ public partial class Form1 : Form
                             this.Invoke((MethodInvoker)delegate {
                                 job.ListViewItem.SubItems[2].Text = $"{pct}%";
                                 pbYoutube.Value = pct;
+                                _downloadWidgetForm?.SetProgress(pct);
+                                _downloadWidgetForm?.SetStatus($"{pct}%");
                             });
                         } catch { }
                     }
@@ -3797,6 +4377,9 @@ public partial class Form1 : Form
                             job.ListViewItem.SubItems[2].Text = "\uC644\uB8CC + \uC790\uB9C9";
                         }
                         pbYoutube.Value = 100;
+                        _downloadWidgetForm?.SetProgress(100);
+                        _downloadWidgetForm?.SetStatus("\uB2E4\uC6B4\uB85C\uB4DC \uC644\uB8CC");
+                        _downloadWidgetForm?.ShowToast("\uB2E4\uC6B4\uB85C\uB4DC\uAC00 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
                     });
                 }
                 
@@ -3819,6 +4402,9 @@ public partial class Form1 : Form
                     this.Invoke((MethodInvoker)delegate {
                         job.ListViewItem.SubItems[2].Text = "취소됨";
                         pbYoutube.Value = 0;
+                        _downloadWidgetForm?.SetProgress(null);
+                        _downloadWidgetForm?.SetBusy(false);
+                        _downloadWidgetForm?.ShowToast("\uB2E4\uC6B4\uB85C\uB4DC\uAC00 \uCDE8\uC18C\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
                     });
                 }
                 Notify("다운로드 취소", $"{job.Video.Title} 다운로드가 취소되었습니다.");
@@ -3873,6 +4459,7 @@ public partial class Form1 : Form
         lblStatus.Text = "모든 처리가 완료되었습니다.";
         pbYoutube.Value = 0;
         _isDownloading = false;
+        _downloadWidgetForm?.SetBusy(false);
     }
 
     private async Task LoadYoutubeInfoWithYtDlpAsync(string url)
@@ -6590,6 +7177,7 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         public string FormatSelector { get; set; } = "";
         public string OutputNameTemplate { get; set; } = "%(title)s";
         public string PreferredTitle { get; set; } = "";
+        public int PlaylistItemIndex { get; set; }
         public bool UseXPrivateMode { get; set; }
         public bool UseInstaPrivateMode { get; set; }
         public bool UseLoginBrowserCookies { get; set; }
@@ -6894,31 +7482,7 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             string periodicReport = "\uC815\uAE30 \uBCF4\uACE0";
             if (action == periodicReport && SettingsManager.Settings.LastHeartbeatDate == currentStatusKey) return false;
 
-            string statsStr = "- \uD1B5\uACC4 \uC5C6\uC74C";
-            var stats = SettingsManager.Settings.UsageStats;
-            if (stats != null && stats.Count > 0)
-            {
-                var dailyStats = stats.Where(x => x.Key.StartsWith(todayStr))
-                                      .OrderByDescending(x => x.Value)
-                                      .Take(12)
-                                      .Select(x => $"- {SanitizeReportText(x.Key.Replace(todayStr + "_", ""))}: {x.Value}")
-                                      .ToList();
-                if (dailyStats.Any()) statsStr = string.Join("\n", dailyStats);
-            }
-
-            string historyStr = "- \uAE30\uB85D \uC5C6\uC74C";
-            var history = SettingsManager.Settings.DailyDownloadHistory;
-            if (history != null && history.Count > 0)
-            {
-                var todayHistory = history.Where(x => x.StartsWith(todayStr))
-                                          .Select(x => SanitizeReportText(x.Replace(todayStr + "|", "")))
-                                          .Where(x => !string.IsNullOrWhiteSpace(x))
-                                          .Distinct()
-                                          .Take(12)
-                                          .Select(x => $"- {x}")
-                                          .ToList();
-                if (todayHistory.Any()) historyStr = string.Join("\n", todayHistory);
-            }
+            string statsStr = BuildUsageStatsReport(todayStr);
 
             string reportTitle = action;
             bool isError = action.Equals("Error", StringComparison.OrdinalIgnoreCase);
@@ -6931,13 +7495,13 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             string installId = string.IsNullOrWhiteSpace(SettingsManager.Settings.InstallId)
                 ? "\uBBF8\uC0DD\uC131"
                 : SettingsManager.Settings.InstallId.Trim();
-            string safeErrorMsg = SanitizeReportText(errorMsg);
+            string safeErrorMsg = isError ? BuildErrorReportContent(errorMsg) : SanitizeReportText(errorMsg);
             var payload = new
             {
                 username = "MMT \uB370\uC774\uD130 \uC9D1\uACC4\uAE30",
                 content = isError
                     ? $"**[\uC624\uB958 \uBCF4\uACE0]** v{CURR_VERSION}\n**\uAE30\uAE30 ID**: `{installId}`\n**\uB0B4\uC6A9**\n{safeErrorMsg}\n**\uC2DC\uAC01**: `{DateTime.Now:yyyy-MM-dd HH:mm:ss}`"
-                    : $"**[{reportTitle}]** v{CURR_VERSION}\n**\uAE30\uAE30 ID**: `{installId}`\n\n**\uAE30\uB2A5 \uC0AC\uC6A9 \uD604\uD669**\n{statsStr}\n\n**\uC624\uB298\uC758 \uB2E4\uC6B4\uB85C\uB4DC**\n{historyStr}\n\n**\uBCF4\uACE0 \uC2DC\uAC01**: `{DateTime.Now:yyyy-MM-dd HH:mm}`"
+                    : $"**[{reportTitle}]** v{CURR_VERSION}\n**\uAE30\uAE30 ID**: `{installId}`\n\n**\uAE30\uB2A5 \uC0AC\uC6A9 \uD1B5\uACC4**\n{statsStr}\n\n**\uBCF4\uACE0 \uAE30\uC900**: `{todayStr}`\n**\uBCF4\uACE0 \uC2DC\uAC01**: `{DateTime.Now:yyyy-MM-dd HH:mm}`"
             };
 
             var result = await _httpClient.PostAsync(secretUrl, new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"));
@@ -6949,6 +7513,84 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             }
         } catch { }
         return false;
+    }
+
+    private static string BuildUsageStatsReport(string todayStr)
+    {
+        var stats = SettingsManager.Settings.UsageStats;
+        if (stats == null || stats.Count == 0) return "- \uD1B5\uACC4 \uC5C6\uC74C";
+
+        var dailyStats = stats
+            .Where(x => x.Key.StartsWith(todayStr + "_", StringComparison.Ordinal))
+            .Select(x => new
+            {
+                Feature = SanitizeReportText(x.Key.Replace(todayStr + "_", "")),
+                Count = Math.Max(0, x.Value)
+            })
+            .Where(x => x.Count > 0 && !string.IsNullOrWhiteSpace(x.Feature))
+            .OrderByDescending(x => x.Count)
+            .Take(12)
+            .ToList();
+
+        int total = dailyStats.Sum(x => x.Count);
+        if (total <= 0) return "- \uD1B5\uACC4 \uC5C6\uC74C";
+
+        var lines = new List<string>
+        {
+            $"- \uC624\uB298 \uCD1D \uC0AC\uC6A9\uB7C9: {total}"
+        };
+
+        foreach (var item in dailyStats)
+        {
+            double percent = item.Count * 100.0 / total;
+            int filled = Math.Clamp((int)Math.Round(percent / 10.0), 0, 10);
+            string bar = new string('\u25A0', filled).PadRight(10, '\u25A1');
+            lines.Add($"- {item.Feature}: {item.Count}회 ({percent:F1}%) {bar}");
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static string BuildErrorReportContent(string rawError)
+    {
+        string text = SanitizeReportText(rawError);
+        string url = ExtractReportValue(text, "URL:");
+        string cause = "";
+
+        int causeStart = text.IndexOf("(\uC6D0\uC778:", StringComparison.Ordinal);
+        if (causeStart >= 0)
+        {
+            cause = text[(causeStart + "(\uC6D0\uC778:".Length)..].Trim();
+            if (cause.EndsWith(")", StringComparison.Ordinal)) cause = cause[..^1].Trim();
+        }
+
+        if (string.IsNullOrWhiteSpace(cause))
+        {
+            cause = text;
+        }
+
+        if (cause.Length > 1600) cause = cause[..1600] + "\n... \uC774\uD558 \uC0DD\uB7B5";
+
+        return string.Join("\n", new[]
+        {
+            $"**URL**: {SanitizeReportText(string.IsNullOrWhiteSpace(url) ? "\uD655\uC778 \uBD88\uAC00" : url)}",
+            $"**\uC624\uB958 \uB0B4\uC6A9**: {SanitizeReportText(cause)}"
+        });
+    }
+
+    private static string ExtractReportValue(string text, string marker)
+    {
+        int index = text.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (index < 0) return "";
+
+        string value = text[(index + marker.Length)..].Trim();
+        int newline = value.IndexOf('\n');
+        if (newline >= 0) value = value[..newline].Trim();
+
+        int paren = value.IndexOf("(\uC6D0\uC778:", StringComparison.Ordinal);
+        if (paren >= 0) value = value[..paren].Trim();
+
+        return value.Trim();
     }
 
     private static string SanitizeReportText(string text)
@@ -6999,5 +7641,15 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             return fs.ReadByte() == 'M' && fs.ReadByte() == 'Z';
         }
         catch { return false; }
+    }
+
+    private sealed class DetectedVideoItem
+    {
+        public string Title { get; set; } = "";
+        public string Url { get; set; } = "";
+        public string Duration { get; set; } = "";
+        public string ThumbnailUrl { get; set; } = "";
+        public string SourcePageUrl { get; set; } = "";
+        public int PlaylistIndex { get; set; }
     }
 }

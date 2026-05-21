@@ -19,6 +19,7 @@ namespace YoutubeDownloader
         public string FormatSelector { get; set; } = "";
         public string OutputNameTemplate { get; set; } = "%(title)s";
         public string PreferredTitle { get; set; } = "";
+        public int PlaylistItemIndex { get; set; }
         public bool LastSubtitleDownloaded { get; private set; }
         public async Task<string> DownloadVideoAsync(string videoUrl, string saveDirectory, string browser = "none", System.Threading.CancellationToken token = default, string cookieFile = "", Dictionary<string, string>? headers = null)
         {
@@ -242,7 +243,14 @@ namespace YoutubeDownloader
             bool isYouTubeDownload = IsYouTubeUrl(videoUrl);
 
             string arguments = $"{(isYouTubeDownload ? "--ignore-config " : "")}--newline --encoding utf-8 --user-agent \"{userAgent}\" --no-warnings ";
-            if (isYouTubeDownload) arguments += "--no-playlist ";
+            if (isYouTubeDownload)
+            {
+                arguments += "--no-playlist --playlist-items 1 ";
+            }
+            else if (PlaylistItemIndex > 0)
+            {
+                arguments += $"--playlist-items {PlaylistItemIndex} ";
+            }
             
             // 사이트별로 적절한 Referer 설정
             string referer = "";
@@ -264,15 +272,6 @@ namespace YoutubeDownloader
             else if (!string.IsNullOrEmpty(browser) && browser != "none")
             {
                 arguments += $"--cookies-from-browser {browser.ToLower()} ";
-            }
-
-            if (isYouTubeDownload && (string.IsNullOrEmpty(cookieFile) || !File.Exists(cookieFile)) && (string.IsNullOrEmpty(browser) || browser == "none"))
-            {
-                string webViewProfilePath = Path.Combine(SettingsManager.WebViewDataFolder, "EBWebView");
-                if (Directory.Exists(webViewProfilePath))
-                {
-                    arguments += $"--cookies-from-browser \"chromium:{webViewProfilePath}\" ";
-                }
             }
 
             // 추가 헤더 설정 (Twitter 비공개 계정 등 우회용)
@@ -336,6 +335,22 @@ namespace YoutubeDownloader
 
             if (result.Success)
             {
+                if (!TryResolveDownloadedFile(outputTemplate, result.DownloadedFilePath, out string resolvedDownloadedFilePath))
+                {
+                    result = (
+                        false,
+                        "ERROR: No downloaded media file was created. The page may not contain a downloadable video, or yt-dlp did not report an output file.",
+                        result.DownloadedFilePath,
+                        result.StandardOutput);
+                }
+                else
+                {
+                    result = (true, result.ErrorOutput, resolvedDownloadedFilePath, result.StandardOutput);
+                }
+            }
+
+            if (result.Success)
+            {
                 if (DownloadSubtitles)
                 {
                     LastSubtitleDownloaded = await TryDownloadYtDlpSubtitlesAsync(ytDlpPath, commonArguments, ffmpegDir, outputTemplate, videoUrl, token);
@@ -382,7 +397,7 @@ namespace YoutubeDownloader
                 {
                     process.StartInfo = psi;
                     Regex progressRegex = new Regex(@"\[download\]\s+(?<percent>\d+(\.\d+)?)%");
-                    Regex outputRegex = new Regex(@"(?:Merging formats into|Destination:)\s+""?(?<filepath>.+?)""?$");
+                    Regex outputRegex = new Regex(@"(?:(?:Merging formats into|Destination:)\s+""?(?<filepath>.+?)""?$|\[download\]\s+(?<filepath>.+?)\s+has already been downloaded)");
 
                     process.OutputDataReceived += (sender, e) =>
                     {
@@ -426,6 +441,18 @@ namespace YoutubeDownloader
             yield return $"{commonArguments}-f \"best\" --no-check-formats --hls-use-mpegts --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
             yield return $"{commonArguments}--extractor-args \"youtube:player_client=web,web_safari,android,ios\" -f \"bestvideo*+bestaudio/best\" --merge-output-format mp4 --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
             yield return $"{commonArguments}-f \"worst/best\" --no-check-formats --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
+        }
+
+        private static bool TryResolveDownloadedFile(string outputTemplate, string reportedPath, out string downloadedFilePath)
+        {
+            downloadedFilePath = reportedPath;
+            if (!string.IsNullOrWhiteSpace(downloadedFilePath) && File.Exists(downloadedFilePath))
+            {
+                return true;
+            }
+
+            downloadedFilePath = "";
+            return false;
         }
 
         private static bool IsYouTubeUrl(string url)
