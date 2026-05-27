@@ -98,7 +98,7 @@ public partial class Form1 : Form
     private CancellationTokenSource? _ytDlpCts;
     private int _lastWidth = 800;
     private int _lastHeight = 600;
-    private const string CURR_VERSION = "1.3.0";
+    private const string CURR_VERSION = "1.3.1";
 
     // [Twitter/X Private Extraction] Captured Data
     private string _capturedM3u8Url = "";
@@ -371,7 +371,7 @@ public partial class Form1 : Form
         btnOpenYoutubeFolder.Text = "폴더 열기";
 
         lblYtDlpTitle.Text = "웹 사이트 영상 다운로드";
-        lblYtDlpDesc.Text = "치지직, Instagram, SOOP, Pinterest, X, Vimeo, Anilife, Linkkf 등 다양한 사이트를 지원합니다.\n로그인이 필요한 일부공개/나이제한 영상은 로그인 후 좌측 상단 즉시 다운로드 또는 URL 입력으로 받을 수 있습니다.";
+        lblYtDlpDesc.Text = "치지직, Instagram, SOOP, Pinterest, X, Vimeo, Anilife, Linkkf 등 다양한 사이트를 지원합니다.\n로그인이 필요한 회원전용/나이제한 영상은 로그인 후 좌측 상단 즉시 다운로드 또는 URL 입력으로 받을 수 있습니다. YouTube 일부공개 영상은 URL만 있으면 유튜브 다운로더에서 받을 수 있습니다.";
         txtYtDlpUrl.PlaceholderText = "다운로드할 영상의 URL을 입력하세요...";
         chkYtDlpDownloadSubtitles.Text = "자막도 함께 다운로드";
         btnYtDlpRun.Text = _isYtDlpQueueRunning ? YtDlpQueueButtonText : YtDlpStartButtonText;
@@ -438,21 +438,6 @@ public partial class Form1 : Form
 
     private async Task<string> GetServerChangelogAsync()
     {
-        try
-        {
-
-            string changelogUrl = "https://raw.githubusercontent.com/SugarRush1231/Multi_Media_Toolkit/main/changelog.txt";
-            
-            using var client = new HttpClient();
-            client.Timeout = TimeSpan.FromSeconds(5);
-            var response = await client.GetAsync(changelogUrl);
-            
-            if (response.IsSuccessStatusCode)
-            {
-                return await response.Content.ReadAsStringAsync();
-            }
-        } catch { }
-
         try
         {
             string localChangelogPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "changelog.txt");
@@ -637,7 +622,7 @@ public partial class Form1 : Form
     private void ConfigureLoginDownloadHelp()
     {
         btnYtDlpLoginBrowser.Text = "\uB85C\uADF8\uC778 \uD6C4 \uB2E4\uC6B4";
-        lblYtDlpDesc.Text = "치지직, Instagram, SOOP, Pinterest, X, Vimeo, Anilife, Linkkf 등 다양한 사이트를 지원합니다.\n로그인이 필요한 일부공개/나이제한 영상은 로그인 후 좌측 상단 즉시 다운로드 또는 URL 입력으로 받을 수 있습니다.";
+        lblYtDlpDesc.Text = "치지직, Instagram, SOOP, Pinterest, X, Vimeo, Anilife, Linkkf 등 다양한 사이트를 지원합니다.\n로그인이 필요한 회원전용/나이제한 영상은 로그인 후 좌측 상단 즉시 다운로드 또는 URL 입력으로 받을 수 있습니다. YouTube 일부공개 영상은 URL만 있으면 유튜브 다운로더에서 받을 수 있습니다.";
 
         btnYtDlpLoginBrowser.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         btnYtDlpLoginBrowser.Location = new Point(180, 182);
@@ -653,7 +638,7 @@ public partial class Form1 : Form
         };
 
         string helpText =
-            "로그인이 필요한 일부공개, 나이제한, 회원전용, 팔로워/구독자 공개 영상을 받을 때 사용합니다.\n\n" +
+            "로그인이 필요한 나이제한, 회원전용, 팔로워/구독자 공개 영상을 받을 때 사용합니다. YouTube 일부공개 영상은 로그인 없이 URL만으로 유튜브 다운로더에서 받을 수 있습니다.\n\n" +
             "1. [로그인 후 다운]을 누른 뒤 사이트를 선택하고 로그인합니다.\n" +
             "2. 영상 페이지에서 좌측 상단 [즉시 다운로드]를 누르면 바로 받을 수 있습니다.\n" +
             "3. 브라우저를 닫은 뒤 URL 입력칸에 주소를 넣고 다운로드할 수도 있습니다.\n\n" +
@@ -1116,7 +1101,7 @@ public partial class Form1 : Form
                 Text = "\uB2E4\uB978 \uBC84\uC804 \uBC1B\uAE30",
                 Size = new Size(145, 34),
                 BorderRadius = 14,
-                BackColor = Color.FromArgb(241, 245, 249),
+                BackColor = Color.FromArgb(226, 232, 240),
                 ForeColor = Color.FromArgb(51, 65, 85),
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 9F, FontStyle.Bold),
@@ -2100,6 +2085,24 @@ public partial class Form1 : Form
                lower.Contains("no video formats");
     }
 
+    private static bool IsExplicitYouTubeLoginRequiredError(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return false;
+
+        string lower = message.ToLowerInvariant();
+        return lower.Contains("private video")
+            || lower.Contains("members-only")
+            || lower.Contains("members only")
+            || lower.Contains("join this channel")
+            || lower.Contains("sign in to confirm your age")
+            || lower.Contains("age-restricted")
+            || lower.Contains("login required")
+            || lower.Contains("cookies")
+            || lower.Contains("--cookies")
+            || lower.Contains("not a bot")
+            || lower.Contains("confirm you're not a bot");
+    }
+
     private void GuideToWebsiteDownloadTab(string url)
     {
         txtYtDlpUrl.Text = url;
@@ -2185,7 +2188,7 @@ public partial class Form1 : Form
         for (int i = 0; i < 150; i++)
         {
             await Task.Delay(200);
-            if (_currentVideo != null && _streamManifest != null && cmbQuality.SelectedItem != null)
+            if (!string.IsNullOrWhiteSpace(_customTitle) && cmbQuality.SelectedItem != null)
             {
                 BtnAddQueue_Click(this, EventArgs.Empty);
                 return;
@@ -4182,6 +4185,7 @@ public partial class Form1 : Form
     private async Task<List<string>> TryDownloadYoutubeSubtitleAsync(DownloadJob job)
     {
         var downloaded = new List<string>();
+        if (job.Video == null) return downloaded;
         try
         {
             var captionManifest = await _youtube.Videos.ClosedCaptions.GetManifestAsync(job.Video.Id, job.JobCts.Token);
@@ -4206,6 +4210,35 @@ public partial class Form1 : Form
             Debug.WriteLine($"[YouTubeSubtitle] {ex.Message}");
             return downloaded;
         }
+    }
+
+    private static string GetDownloadJobTitle(DownloadJob job)
+    {
+        if (!string.IsNullOrWhiteSpace(job.CustomFileName)) return job.CustomFileName;
+        if (job.Video != null && !string.IsNullOrWhiteSpace(job.Video.Title)) return job.Video.Title;
+        if (!string.IsNullOrWhiteSpace(job.Url)) return job.Url;
+        return "YouTube 영상";
+    }
+
+    private static bool LooksLikeUnreadableTitle(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return true;
+
+        int replacementCount = title.Count(ch => ch == '\uFFFD' || ch == '�');
+        if (replacementCount > 0) return true;
+
+        int visibleCount = title.Count(ch => !char.IsWhiteSpace(ch));
+        if (visibleCount == 0) return true;
+
+        int questionCount = title.Count(ch => ch == '?');
+        return visibleCount <= 12 && questionCount >= Math.Max(3, visibleCount / 2);
+    }
+
+    private static bool IsFallbackYouTubeTitle(string title)
+    {
+        return string.IsNullOrWhiteSpace(title)
+            || title.StartsWith("YouTube_Video_", StringComparison.OrdinalIgnoreCase)
+            || LooksLikeUnreadableTitle(title);
     }
 
     private static List<ClosedCaptionTrackInfo> SelectCaptionTracks(ClosedCaptionManifest manifest, string preset)
@@ -4288,6 +4321,7 @@ public partial class Form1 : Form
         {
             try
             {
+                string jobTitle = GetDownloadJobTitle(job);
                 if (job.JobCts.IsCancellationRequested || !lvQueue.Items.Contains(job.ListViewItem))
                     continue;
                 
@@ -4297,7 +4331,7 @@ public partial class Form1 : Form
                 _downloadWidgetForm?.SetStatus("\uC720\uD29C\uBE0C \uB2E4\uC6B4\uB85C\uB4DC \uC2DC\uC791");
                 _downloadWidgetForm?.ShowToast("\uB2E4\uC6B4\uB85C\uB4DC\uAC00 \uC2DC\uC791\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
                 job.ListViewItem.SubItems[2].Text = "준비 중...";
-                lblStatus.Text = $"진행 중: {job.Video.Title}";
+                lblStatus.Text = $"진행 중: {jobTitle}";
 
                 int lastPct = -1;
                 var progress = new Progress<double>(p =>
@@ -4383,7 +4417,7 @@ public partial class Form1 : Form
                     });
                 }
                 
-                Notify("다운로드 성공", $"{job.Video.Title} 다운로드가 완료되었습니다.");
+                Notify("다운로드 성공", $"{jobTitle} 다운로드가 완료되었습니다.");
                 
 
                 LogDownload(BuildDownloadHistoryEntry("YouTube", job.CustomFileName, job.OutputPath));
@@ -4407,7 +4441,7 @@ public partial class Form1 : Form
                         _downloadWidgetForm?.ShowToast("\uB2E4\uC6B4\uB85C\uB4DC\uAC00 \uCDE8\uC18C\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
                     });
                 }
-                Notify("다운로드 취소", $"{job.Video.Title} 다운로드가 취소되었습니다.");
+                Notify("다운로드 취소", $"{GetDownloadJobTitle(job)} 다운로드가 취소되었습니다.");
             }
             catch (Exception ex)
             {
@@ -4475,24 +4509,40 @@ public partial class Form1 : Form
             ProcessStartInfo psi = new ProcessStartInfo
             {
                 FileName = ytDlpPath,
-                Arguments = $"--print \"%(title)s|%(thumbnail)s\" --no-warnings \"{url}\"",
+                Arguments = $"--ignore-config --encoding utf-8 --no-playlist --playlist-items 1 --extractor-args \"youtube:player_client=web,web_safari,android,ios\" --print \"%(title)s|%(thumbnail)s\" --no-warnings \"{url}\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                StandardOutputEncoding = System.Text.Encoding.UTF8
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8
             };
 
             using var process = new Process { StartInfo = psi };
             string output = "";
+            string errorOutput = "";
             process.OutputDataReceived += (s, e) => { if (!string.IsNullOrEmpty(e.Data)) output = e.Data; };
+            process.ErrorDataReceived += (s, e) => { if (!string.IsNullOrEmpty(e.Data)) errorOutput += e.Data + Environment.NewLine; };
             process.Start();
             process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
             await process.WaitForExitAsync();
 
             if (process.ExitCode != 0 || string.IsNullOrEmpty(output))
             {
+                string loginHint = IsExplicitYouTubeLoginRequiredError(errorOutput)
+                    ? "이 영상은 비공개, 회원전용, 나이제한 또는 로그인 확인이 필요한 영상일 수 있습니다. [로그인 후 다운]에서 YouTube에 로그인한 뒤 다시 시도해 주세요."
+                    : "일부공개 영상은 URL만 있으면 받을 수 있어야 하므로 일반/우회 방식으로 시도했습니다. 계속 실패하면 YouTube 구조 변경, 라이브/쇼츠 특수 포맷, yt-dlp 대응 지연 가능성이 큽니다.";
+                if (!IsExplicitYouTubeLoginRequiredError(errorOutput))
+                {
+                    output = $"YouTube_Video_{DateTime.Now:yyyyMMdd_HHmmss}|";
+                }
+                else
+                {
                 throw new Exception(
+                    "우회 방식을 통해서도 YouTube 영상 정보를 가져오지 못했습니다.\n\n" +
+                    loginHint + "\n\n" +
+                    "[오류 내용]\n" + (string.IsNullOrWhiteSpace(errorOutput) ? "yt-dlp가 상세 오류를 반환하지 않았습니다." : errorOutput.Trim()) + "\n\n" +
                     "우회 방식을 통해서도 영상 정보를 가져오지 못했습니다.\n\n" +
                     "이 경우 보통 유튜브 보안 구조 변경, 비공개/회원 전용/나이 제한 영상, 라이브 영상, 지역 제한, 삭제된 영상 때문에 발생합니다.\n\n" +
                     "해볼 수 있는 방법:\n" +
@@ -4502,8 +4552,14 @@ public partial class Form1 : Form
                     "DRM 보호 영상이나 권한이 없는 비공개 영상은 로그인해도 받을 수 없습니다.");
             }
 
+            }
+
             var parts = output.Split('|', 2);
             _customTitle = parts[0].Trim();
+            if (LooksLikeUnreadableTitle(_customTitle))
+            {
+                _customTitle = $"YouTube_Video_{DateTime.Now:yyyyMMdd_HHmmss}";
+            }
             string thumbUrl = parts.Length > 1 ? parts[1].Trim() : "";
 
             lblVideoTitle.Text = _customTitle;
@@ -4579,10 +4635,16 @@ public partial class Form1 : Form
         string formatArg = GetYtDlpFallbackFormat(job.Option);
         bool isAudioOnly = !job.Option.IsVideo;
         string ext = isAudioOnly ? job.Option.Id.Replace("best_", "") : "mp4";
-        string outputTemplate = job.OutputPath;
-        string sourceUrl = !string.IsNullOrWhiteSpace(job.Url) ? job.Url : job.Video?.Url ?? "";
+            string outputTemplate = job.OutputPath;
+            string sourceUrl = !string.IsNullOrWhiteSpace(job.Url) ? job.Url : job.Video?.Url ?? "";
+        if (job.Video == null && IsFallbackYouTubeTitle(job.CustomFileName))
+        {
+            string directory = Path.GetDirectoryName(job.OutputPath) ?? GetDownloadSaveDirectory(sourceUrl, isAudioOnly);
+            string siteTemplate = BuildYtDlpOutputNameTemplate("YouTube");
+            outputTemplate = Path.Combine(directory, $"{siteTemplate}.%(ext)s");
+        }
 
-        string arguments = $"--newline --encoding utf-8 --no-warnings --ffmpeg-location \"{ffmpegDir}\" ";
+        string arguments = $"--ignore-config --newline --encoding utf-8 --no-warnings --no-playlist --playlist-items 1 --extractor-args \"youtube:player_client=web,web_safari,android,ios\" --ffmpeg-location \"{ffmpegDir}\" ";
 
         if (isAudioOnly)
         {
@@ -6556,7 +6618,7 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
     {
         SetupXPrivateUI();
         SetLoginBrowserControlsVisible(false);
-        bool showAddressBar = siteName == "\uC6F9 \uBE0C\uB77C\uC6B0\uC800" || siteName == "\uAE30\uD0C0";
+        bool showAddressBar = ShouldShowLoginBrowserAddressBar(siteName);
 
         this.SuspendLayout();
         panelXBrowser.SuspendLayout();
@@ -6604,7 +6666,7 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             }
         }
 
-        if (showAddressBar && txtLoginBrowserAddress != null)
+        if (ShouldFocusLoginBrowserAddressBar(siteName) && txtLoginBrowserAddress != null)
         {
             BeginInvoke(new Action(() =>
             {
@@ -6612,6 +6674,20 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
                 txtLoginBrowserAddress.SelectAll();
             }));
         }
+    }
+
+    private static bool ShouldShowLoginBrowserAddressBar(string siteName)
+    {
+        return siteName == "\uC6F9 \uBE0C\uB77C\uC6B0\uC800" ||
+               siteName == "\uAE30\uD0C0" ||
+               siteName == "\uCE58\uC9C0\uC9C1" ||
+               siteName == "SOOP";
+    }
+
+    private static bool ShouldFocusLoginBrowserAddressBar(string siteName)
+    {
+        return siteName == "\uC6F9 \uBE0C\uB77C\uC6B0\uC800" ||
+               siteName == "\uAE30\uD0C0";
     }
 
     private void SetLoginBrowserControlsVisible(bool visible)

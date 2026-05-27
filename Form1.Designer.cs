@@ -1216,7 +1216,7 @@ partial class Form1
         // btnBrowseWebM
         // 
         btnBrowseWebM.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        btnBrowseWebM.BackColor = Color.FromArgb(241, 245, 249);
+        btnBrowseWebM.BackColor = Color.FromArgb(226, 232, 240);
         btnBrowseWebM.BorderRadius = 20;
         btnBrowseWebM.FlatAppearance.BorderSize = 0;
         btnBrowseWebM.FlatStyle = FlatStyle.Flat;
@@ -1255,7 +1255,7 @@ partial class Form1
         // btnBrowseWebMOutput
         // 
         btnBrowseWebMOutput.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        btnBrowseWebMOutput.BackColor = Color.FromArgb(241, 245, 249);
+        btnBrowseWebMOutput.BackColor = Color.FromArgb(226, 232, 240);
         btnBrowseWebMOutput.BorderRadius = 20;
         btnBrowseWebMOutput.FlatAppearance.BorderSize = 0;
         btnBrowseWebMOutput.FlatStyle = FlatStyle.Flat;
@@ -1427,7 +1427,7 @@ partial class Form1
         // btnBrowseCodec
         // 
         btnBrowseCodec.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        btnBrowseCodec.BackColor = Color.FromArgb(241, 245, 249);
+        btnBrowseCodec.BackColor = Color.FromArgb(226, 232, 240);
         btnBrowseCodec.BorderRadius = 20;
         btnBrowseCodec.FlatAppearance.BorderSize = 0;
         btnBrowseCodec.FlatStyle = FlatStyle.Flat;
@@ -1466,7 +1466,7 @@ partial class Form1
         // btnBrowseCodecOutput
         // 
         btnBrowseCodecOutput.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        btnBrowseCodecOutput.BackColor = Color.FromArgb(241, 245, 249);
+        btnBrowseCodecOutput.BackColor = Color.FromArgb(226, 232, 240);
         btnBrowseCodecOutput.BorderRadius = 20;
         btnBrowseCodecOutput.FlatAppearance.BorderSize = 0;
         btnBrowseCodecOutput.FlatStyle = FlatStyle.Flat;
@@ -1616,7 +1616,7 @@ partial class Form1
         // btnBrowseAudio
         // 
         btnBrowseAudio.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        btnBrowseAudio.BackColor = Color.FromArgb(241, 245, 249);
+        btnBrowseAudio.BackColor = Color.FromArgb(226, 232, 240);
         btnBrowseAudio.BorderRadius = 20;
         btnBrowseAudio.FlatAppearance.BorderSize = 0;
         btnBrowseAudio.FlatStyle = FlatStyle.Flat;
@@ -1655,7 +1655,7 @@ partial class Form1
         // btnBrowseAudioOutput
         // 
         btnBrowseAudioOutput.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        btnBrowseAudioOutput.BackColor = Color.FromArgb(241, 245, 249);
+        btnBrowseAudioOutput.BackColor = Color.FromArgb(226, 232, 240);
         btnBrowseAudioOutput.BorderRadius = 20;
         btnBrowseAudioOutput.FlatAppearance.BorderSize = 0;
         btnBrowseAudioOutput.FlatStyle = FlatStyle.Flat;
@@ -1789,7 +1789,7 @@ partial class Form1
         lblAbout.Name = "lblAbout";
         lblAbout.Size = new Size(570, 80);
         lblAbout.TabIndex = 17;
-        lblAbout.Text = "Multi Media Toolkit v1.3.0\nCreated by 김병석\n© 2026 all rights reserved.\n(kbs318@naver.com)";
+        lblAbout.Text = "Multi Media Toolkit v1.3.1\nCreated by 김병석\n© 2026 all rights reserved.\n(kbs318@naver.com)";
         lblAbout.TextAlign = ContentAlignment.BottomRight;
         // 
         // lblSettingsTitle
@@ -1846,6 +1846,7 @@ partial class Form1
         // 
         panelSettingsFolder.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         panelSettingsFolder.BackColor = Color.White;
+        panelSettingsFolder.BorderStyle = BorderStyle.FixedSingle;
         panelSettingsFolder.Controls.Add(txtDownloadFolder);
         panelSettingsFolder.Location = new Point(20, 230);
         panelSettingsFolder.Name = "panelSettingsFolder";
@@ -1866,7 +1867,7 @@ partial class Form1
         // btnBrowseFolder
         // 
         btnBrowseFolder.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        btnBrowseFolder.BackColor = Color.FromArgb(241, 245, 249);
+        btnBrowseFolder.BackColor = Color.FromArgb(226, 232, 240);
         btnBrowseFolder.BorderRadius = 20;
         btnBrowseFolder.FlatAppearance.BorderSize = 0;
         btnBrowseFolder.FlatStyle = FlatStyle.Flat;
