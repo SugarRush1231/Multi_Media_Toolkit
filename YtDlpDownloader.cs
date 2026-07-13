@@ -29,6 +29,7 @@ namespace YoutubeDownloader
             videoUrl = videoUrl.Trim().Trim('\"', '\'', ' ');
             if (videoUrl.StartsWith("yt-dlp", StringComparison.OrdinalIgnoreCase)) videoUrl = videoUrl.Remove(0, 6).Trim();
             videoUrl = NormalizeYouTubeSingleVideoUrl(videoUrl);
+            string sourcePageUrl = videoUrl;
 
             if (videoUrl.StartsWith("blob:", StringComparison.OrdinalIgnoreCase))
             {
@@ -242,7 +243,9 @@ namespace YoutubeDownloader
             string userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
             bool isYouTubeDownload = IsYouTubeUrl(videoUrl);
 
-            string arguments = $"{(isYouTubeDownload ? "--ignore-config " : "")}--newline --encoding utf-8 --user-agent \"{userAgent}\" --no-warnings ";
+            string javaScriptRuntimeArguments = isYouTubeDownload ? GetYouTubeJavaScriptRuntimeArguments() : "";
+            string warningArguments = isYouTubeDownload ? "" : "--no-warnings ";
+            string arguments = $"{(isYouTubeDownload ? "--ignore-config " : "")}--newline --encoding utf-8 --user-agent \"{userAgent}\" {warningArguments}{javaScriptRuntimeArguments}";
             if (isYouTubeDownload)
             {
                 arguments += "--no-playlist --playlist-items 1 ";
@@ -297,16 +300,17 @@ namespace YoutubeDownloader
                 formatArguments = $"-f \"{FormatSelector}\" ";
             }
 
-            if (FormatSelector.Equals("best_mp3", StringComparison.OrdinalIgnoreCase))
-            {
-                arguments += $"{formatArguments}--windows-filenames --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
-            }
-            else
-            {
-                arguments += $"{formatArguments}--windows-filenames --ffmpeg-location \"{ffmpegDir}\" --merge-output-format mp4 -o \"{outputTemplate}\" \"{videoUrl}\"";
-            }
+            bool audioOnlyDownload = FormatSelector.Equals("best_mp3", StringComparison.OrdinalIgnoreCase);
+            arguments = BuildYtDlpDownloadArguments(commonArguments, formatArguments, ffmpegDir, outputTemplate, videoUrl, audioOnlyDownload);
 
             var result = await RunYtDlpProcessAsync(arguments);
+
+            if (!result.Success && IsInvalidFilenameError(result.ErrorOutput))
+            {
+                outputTemplate = Path.Combine(saveDirectory, $"Video_{DateTime.Now:yyyyMMdd_HHmmss}_%(extractor)s_%(id)s.%(ext)s");
+                string safeNameArguments = BuildYtDlpDownloadArguments(commonArguments, formatArguments, ffmpegDir, outputTemplate, videoUrl, audioOnlyDownload, strictFileNames: true);
+                result = await RunYtDlpProcessAsync(safeNameArguments);
+            }
 
             if (!result.Success && isYouTubeDownload && IsRequestedFormatUnavailable(result.ErrorOutput))
             {
@@ -330,6 +334,54 @@ namespace YoutubeDownloader
                     {
                         result = (false, result.ErrorOutput + Environment.NewLine + "[Available formats]" + Environment.NewLine + formatList, result.DownloadedFilePath, result.StandardOutput);
                     }
+                }
+            }
+
+            if (!result.Success &&
+                !isYouTubeDownload &&
+                !audioOnlyDownload &&
+                WebViewResolver != null &&
+                result.ErrorOutput.Contains("Unsupported URL", StringComparison.OrdinalIgnoreCase))
+            {
+                string resolvedMediaUrl = "";
+                try
+                {
+                    resolvedMediaUrl = await WebViewResolver(sourcePageUrl);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch
+                {
+                    resolvedMediaUrl = "";
+                }
+
+                if (IsSafeResolvedMediaUrl(resolvedMediaUrl, sourcePageUrl))
+                {
+                    var fallbackHeaders = headers != null
+                        ? new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase)
+                        : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+                    if (!fallbackHeaders.ContainsKey("Referer"))
+                        fallbackHeaders["Referer"] = sourcePageUrl;
+
+                    try
+                    {
+                        var sourceUri = new Uri(sourcePageUrl);
+                        if (!fallbackHeaders.ContainsKey("Origin"))
+                            fallbackHeaders["Origin"] = $"{sourceUri.Scheme}://{sourceUri.Authority}";
+                    }
+                    catch { }
+
+                    string fallbackName = GetPreferredFileName($"Video_{DateTime.Now:yyyyMMdd_HHmmss}");
+                    return await DownloadM3u8WithFFmpegAsync(
+                        resolvedMediaUrl,
+                        saveDirectory,
+                        browser,
+                        token,
+                        fallbackHeaders,
+                        fallbackName);
                 }
             }
 
@@ -436,11 +488,31 @@ namespace YoutubeDownloader
 
         private static IEnumerable<string> BuildYouTubeFormatFallbackArguments(string commonArguments, string ffmpegDir, string outputTemplate, string videoUrl)
         {
-            yield return $"{commonArguments}-f \"bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*+ba/b[ext=mp4]/b\" --merge-output-format mp4 --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
-            yield return $"{commonArguments}-f \"bestvideo*+bestaudio/best\" --merge-output-format mp4 --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
-            yield return $"{commonArguments}-f \"best\" --no-check-formats --hls-use-mpegts --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
-            yield return $"{commonArguments}--extractor-args \"youtube:player_client=web,web_safari,android,ios\" -f \"bestvideo*+bestaudio/best\" --merge-output-format mp4 --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
-            yield return $"{commonArguments}-f \"worst/best\" --no-check-formats --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
+            string fileNameSafetyArgs = "--windows-filenames --trim-filenames 160 ";
+            yield return $"{commonArguments}-f \"bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*+ba/b[ext=mp4]/b\" {fileNameSafetyArgs}--merge-output-format mp4 --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
+            yield return $"{commonArguments}-f \"bestvideo*+bestaudio/best\" {fileNameSafetyArgs}--merge-output-format mp4 --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
+            yield return $"{commonArguments}-f \"best\" --no-check-formats --hls-use-mpegts {fileNameSafetyArgs}--ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
+            yield return $"{commonArguments}--extractor-args \"youtube:player_client=web,web_safari,android,ios\" -f \"bestvideo*+bestaudio/best\" {fileNameSafetyArgs}--merge-output-format mp4 --ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
+            yield return $"{commonArguments}-f \"worst/best\" --no-check-formats {fileNameSafetyArgs}--ffmpeg-location \"{ffmpegDir}\" -o \"{outputTemplate}\" \"{videoUrl}\"";
+        }
+
+        private static string BuildYtDlpDownloadArguments(string commonArguments, string formatArguments, string ffmpegDir, string outputTemplate, string videoUrl, bool audioOnlyDownload, bool strictFileNames = false)
+        {
+            string fileNameSafetyArgs = strictFileNames
+                ? "--windows-filenames --restrict-filenames --trim-filenames 120 "
+                : "--windows-filenames --trim-filenames 160 ";
+
+            string mergeArguments = audioOnlyDownload ? "" : "--merge-output-format mp4 ";
+            return $"{commonArguments}{formatArguments}{fileNameSafetyArgs}--ffmpeg-location \"{ffmpegDir}\" {mergeArguments}-o \"{outputTemplate}\" \"{videoUrl}\"";
+        }
+
+        private static bool IsInvalidFilenameError(string errorOutput)
+        {
+            if (string.IsNullOrWhiteSpace(errorOutput)) return false;
+
+            return errorOutput.Contains("Invalid argument", StringComparison.OrdinalIgnoreCase)
+                || errorOutput.Contains("Errno 22", StringComparison.OrdinalIgnoreCase)
+                || errorOutput.Contains("unable to open for writing", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool TryResolveDownloadedFile(string outputTemplate, string reportedPath, out string downloadedFilePath)
@@ -461,6 +533,23 @@ namespace YoutubeDownloader
             return url.Contains("youtube.com", StringComparison.OrdinalIgnoreCase)
                 || url.Contains("youtu.be", StringComparison.OrdinalIgnoreCase)
                 || url.Contains("youtube-nocookie.com", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsSafeResolvedMediaUrl(string candidate, string sourcePageUrl)
+        {
+            if (!Uri.TryCreate(candidate, UriKind.Absolute, out var candidateUri)) return false;
+            if (candidateUri.Scheme != Uri.UriSchemeHttp && candidateUri.Scheme != Uri.UriSchemeHttps) return false;
+            if (candidateUri.IsLoopback) return false;
+            if (string.Equals(candidate, sourcePageUrl, StringComparison.OrdinalIgnoreCase)) return false;
+            return true;
+        }
+
+        private static string GetYouTubeJavaScriptRuntimeArguments()
+        {
+            string denoPath = SettingsManager.GetDenoPath();
+            return File.Exists(denoPath)
+                ? $"--js-runtimes \"deno:{denoPath}\" "
+                : "";
         }
 
         private static string NormalizeYouTubeSingleVideoUrl(string url)

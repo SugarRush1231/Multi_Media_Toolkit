@@ -19,9 +19,11 @@ public class AppSettings
     public string DefaultVideoQuality { get; set; } = "Best";
     public string SubtitleLanguagePreset { get; set; } = "Ko";
     public bool EnableWidgetMode { get; set; } = false;
+    public bool EnableCompletedFileQuickUse { get; set; } = false;
     public int WidgetLocationX { get; set; } = int.MinValue;
     public int WidgetLocationY { get; set; } = int.MinValue;
     public string LastSeenVersion { get; set; } = ""; // 기본값은 비워둠 (신규 유저 구분을 위함)
+    public string SkippedUpdateVersion { get; set; } = "";
     public string LastHeartbeatDate { get; set; } = "";
     public string InstallId { get; set; } = ""; // 8자리 익명 기기 ID
     public System.Collections.Generic.Dictionary<string, int> UsageStats { get; set; } = new System.Collections.Generic.Dictionary<string, int>();
@@ -33,6 +35,7 @@ public static class SettingsManager
     public static string UserDataFolder { get; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "YoutubeDownloader");
     public static string WebViewDataFolder { get; } = Path.Combine(UserDataFolder, "BrowserData"); // 보안을 위한 브라우저 데이터 격리 폴더
     private static readonly string SettingsFile = Path.Combine(UserDataFolder, "settings.json");
+    private static readonly object SaveLock = new object();
 
     public static AppSettings Settings { get; private set; } = new AppSettings();
     public static bool IsNewInstall { get; private set; } = false;
@@ -82,14 +85,24 @@ public static class SettingsManager
     public static string GetFFmpegPath() => GetToolPath("ffmpeg.exe");
     public static string GetFFprobePath() => GetToolPath("ffprobe.exe");
     public static string GetYtDlpPath() => GetToolPath("yt-dlp.exe");
+    public static string GetDenoPath() => GetToolPath("deno.exe");
 
     public static void Save()
     {
-        try
+        lock (SaveLock)
         {
-            var json = JsonSerializer.Serialize(Settings, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(SettingsFile, json);
+            string tempFile = SettingsFile + ".tmp";
+            try
+            {
+                Directory.CreateDirectory(UserDataFolder);
+                var json = JsonSerializer.Serialize(Settings, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(tempFile, json);
+                File.Move(tempFile, SettingsFile, overwrite: true);
+            }
+            catch
+            {
+                try { if (File.Exists(tempFile)) File.Delete(tempFile); } catch { }
+            }
         }
-        catch { }
     }
 }

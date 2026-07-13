@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.IO;
 using System.Linq;
@@ -21,6 +21,8 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Drawing.Drawing2D;
 using System.ComponentModel;
+using System.IO.Compression;
+using System.Security.Cryptography;
 
  
 namespace YoutubeDownloader;
@@ -32,6 +34,7 @@ public partial class Form1 : Form
     private Video _currentVideo;
     private string _customTitle = "";
     private string _currentUrl = "";
+    private string _pendingYoutubeSourceFeature = "유튜브 다운로더";
     
     // Download Queue
     private ConcurrentQueue<DownloadJob> _downloadQueue;
@@ -45,6 +48,8 @@ public partial class Form1 : Form
     private readonly object _ytDlpQueueLock = new object();
     private readonly SemaphoreSlim _ytDlpBrowserSemaphore = new SemaphoreSlim(1, 1);
     private readonly SemaphoreSlim _ytDlpInstallSemaphore = new SemaphoreSlim(1, 1);
+    private readonly SemaphoreSlim _ffmpegInstallSemaphore = new SemaphoreSlim(1, 1);
+    private readonly SemaphoreSlim _denoInstallSemaphore = new SemaphoreSlim(1, 1);
     private const int MaxYtDlpParallelDownloads = 3;
     private const string YtDlpStartButtonText = "다운로드";
     private const string YtDlpQueueButtonText = "대기열에 추가";
@@ -68,6 +73,12 @@ public partial class Form1 : Form
     private ComboBox? cmbYtDlpSubtitleLanguage;
     private CheckBox? chkEnableWidgetMode;
     private RoundButton? btnOpenVersionArchive;
+    private RoundButton? btnExperimentalFeatures;
+    private Panel? panelExperimentalFeaturesOverlay;
+    private RoundPanel? panelExperimentalFeaturesMenu;
+    private CheckBox? chkEnableCompletedFileQuickUse;
+    private CompletedFileCardForm? _completedFileCard;
+    private bool _initializingExperimentalFeatures;
     private Label? lblTopWidgetMode;
     private WidgetModeToggleButton? btnTopWidgetMode;
     private DownloadWidgetForm? _downloadWidgetForm;
@@ -90,6 +101,7 @@ public partial class Form1 : Form
     private bool _loginKeepNoticeShown;
     private bool _initializingKeepLoginCheckbox;
     private bool _ytDlpForceUpdateChecked;
+    private bool _denoReadyChecked;
     
     // Conversion Cancellation
     private CancellationTokenSource? _webmCts;
@@ -98,10 +110,13 @@ public partial class Form1 : Form
     private CancellationTokenSource? _ytDlpCts;
     private int _lastWidth = 800;
     private int _lastHeight = 600;
-    private const string CURR_VERSION = "1.3.1";
+    private const string CURR_VERSION = "1.3.2";
 
     // [Twitter/X Private Extraction] Captured Data
     private string _capturedM3u8Url = "";
+    private readonly object _capturedMediaLock = new object();
+    private readonly List<string> _capturedMediaUrls = new List<string>();
+    private int _genericMediaCaptureDepth;
     private string _capturedAuthToken = "";
     private string _capturedCsrfToken = "";
     private string _capturedUserAgent = "";
@@ -186,6 +201,7 @@ public partial class Form1 : Form
 
         InitializeComponent();
         SettingsManager.Load();
+        ConfigureUpdatedAppForeground();
         if (SettingsManager.Settings.EnableWidgetMode)
         {
             SettingsManager.Settings.EnableWidgetMode = false;
@@ -245,6 +261,7 @@ public partial class Form1 : Form
         ConfigureWidgetModeSettings();
         NormalizeKoreanUiText(initialPath);
         ConfigureVersionArchiveButton();
+        ConfigureExperimentalFeaturesMenu();
         ConfigureTopWidgetModeButton();
         ConfigureVideoPickerTab();
 
@@ -304,36 +321,29 @@ public partial class Form1 : Form
             }
         };
 
-        // 
-        if (SettingsManager.Settings.LastSeenVersion != CURR_VERSION)
+        string lastSeenVersion = SettingsManager.Settings.LastSeenVersion?.Trim() ?? "";
+        bool currentVersionValid = Version.TryParse(CURR_VERSION.Trim().TrimStart('v', 'V'), out Version? currentVersion);
+        bool lastSeenVersionValid = Version.TryParse(lastSeenVersion.TrimStart('v', 'V'), out Version? previousVersion);
+
+        if (string.IsNullOrEmpty(lastSeenVersion) || !currentVersionValid || !lastSeenVersionValid)
         {
-
-            if (string.IsNullOrEmpty(SettingsManager.Settings.LastSeenVersion))
-            {
-
-                SettingsManager.Settings.LastSeenVersion = CURR_VERSION;
-                SettingsManager.Save();
-            }
-            else
-            {
-                SettingsManager.Settings.LastSeenVersion = CURR_VERSION;
-                SettingsManager.Save();
-
-                _ = Task.Run(async () => {
-
-                    string changelog = await GetServerChangelogAsync();
-                    
-                    this.Invoke((MethodInvoker)delegate {
-                        string title = $"Multi Media Toolkit [v{CURR_VERSION}]";
-                        ShowCenteredMessage(changelog, title, MessageBoxButtons.OK, MessageBoxIcon.Information);
-                        
-                        // 버전 공지 확인 후 다음 실행부터 숨김
-                    });
-                });
-            }
+            SettingsManager.Settings.LastSeenVersion = CURR_VERSION;
+            SettingsManager.Save();
         }
-        
-        CleanupOldInstallation();
+        else if (currentVersion!.CompareTo(previousVersion) > 0)
+        {
+            _ = Task.Run(async () => {
+                string changelog = await GetServerChangelogAsync();
+
+                this.Invoke((MethodInvoker)delegate {
+                    string title = $"Multi Media Toolkit [v{CURR_VERSION}]";
+                    ShowCenteredMessage(changelog, title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                    SettingsManager.Settings.LastSeenVersion = CURR_VERSION;
+                    SettingsManager.Save();
+                });
+            });
+        }
     }
 
     private void SetSavePathLabels(string path)
@@ -371,7 +381,7 @@ public partial class Form1 : Form
         btnOpenYoutubeFolder.Text = "폴더 열기";
 
         lblYtDlpTitle.Text = "웹 사이트 영상 다운로드";
-        lblYtDlpDesc.Text = "치지직, Instagram, SOOP, Pinterest, X, Vimeo, Anilife, Linkkf 등 다양한 사이트를 지원합니다.\n로그인이 필요한 회원전용/나이제한 영상은 로그인 후 좌측 상단 즉시 다운로드 또는 URL 입력으로 받을 수 있습니다. YouTube 일부공개 영상은 URL만 있으면 유튜브 다운로더에서 받을 수 있습니다.";
+        lblYtDlpDesc.Text = "치지직, Instagram, TikTok, SOOP, Pinterest, X, Vimeo, Anilife, Linkkf 등 다양한 사이트를 지원합니다.\n로그인이 필요한 회원전용/나이제한 영상은 로그인 후 좌측 상단 즉시 다운로드 또는 URL 입력으로 받을 수 있습니다. YouTube 일부공개 영상은 URL만 있으면 유튜브 다운로더에서 받을 수 있습니다.";
         txtYtDlpUrl.PlaceholderText = "다운로드할 영상의 URL을 입력하세요...";
         chkYtDlpDownloadSubtitles.Text = "자막도 함께 다운로드";
         btnYtDlpRun.Text = _isYtDlpQueueRunning ? YtDlpQueueButtonText : YtDlpStartButtonText;
@@ -460,13 +470,18 @@ public partial class Form1 : Form
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Multi Media Toolkit")
             };
 
-            string currentDir = AppDomain.CurrentDomain.BaseDirectory.ToLower();
+            string currentDir = Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
 
             foreach (var path in oldPaths)
             {
-                if (Directory.Exists(path) && !currentDir.StartsWith(path.ToLower()))
+                string oldExecutable = Path.Combine(path, "Multi Media Toolkit.exe");
+                string oldDirectory = Path.GetFullPath(path)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                if (Directory.Exists(path) &&
+                    File.Exists(oldExecutable) &&
+                    !currentDir.StartsWith(oldDirectory, StringComparison.OrdinalIgnoreCase))
                 {
-
                     Directory.Delete(path, true);
                 }
             }
@@ -622,7 +637,7 @@ public partial class Form1 : Form
     private void ConfigureLoginDownloadHelp()
     {
         btnYtDlpLoginBrowser.Text = "\uB85C\uADF8\uC778 \uD6C4 \uB2E4\uC6B4";
-        lblYtDlpDesc.Text = "치지직, Instagram, SOOP, Pinterest, X, Vimeo, Anilife, Linkkf 등 다양한 사이트를 지원합니다.\n로그인이 필요한 회원전용/나이제한 영상은 로그인 후 좌측 상단 즉시 다운로드 또는 URL 입력으로 받을 수 있습니다. YouTube 일부공개 영상은 URL만 있으면 유튜브 다운로더에서 받을 수 있습니다.";
+        lblYtDlpDesc.Text = "치지직, Instagram, TikTok, SOOP, Pinterest, X, Vimeo, Anilife, Linkkf 등 다양한 사이트를 지원합니다.\n로그인이 필요한 회원전용/나이제한 영상은 로그인 후 좌측 상단 즉시 다운로드 또는 URL 입력으로 받을 수 있습니다. YouTube 일부공개 영상은 URL만 있으면 유튜브 다운로더에서 받을 수 있습니다.";
 
         btnYtDlpLoginBrowser.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         btnYtDlpLoginBrowser.Location = new Point(180, 182);
@@ -1119,6 +1134,269 @@ public partial class Form1 : Form
         btnOpenVersionArchive.BringToFront();
     }
 
+    private void ConfigureExperimentalFeaturesMenu()
+    {
+        if (btnExperimentalFeatures == null)
+        {
+            btnExperimentalFeatures = new RoundButton
+            {
+                Name = "btnExperimentalFeatures",
+                Text = "실험 기능",
+                Size = new Size(120, 34),
+                BorderRadius = 14,
+                BackColor = Color.FromArgb(226, 232, 240),
+                ForeColor = Color.FromArgb(51, 65, 85),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                Anchor = AnchorStyles.Left | AnchorStyles.Bottom
+            };
+            btnExperimentalFeatures.FlatAppearance.BorderSize = 0;
+            btnExperimentalFeatures.Click += (s, e) => ShowExperimentalFeaturesMenu();
+            tabSettings.Controls.Add(btnExperimentalFeatures);
+
+            var tip = new ToolTip { ShowAlways = true };
+            tip.SetToolTip(btnExperimentalFeatures, "정식 적용 전 기능을 선택해서 시험해 볼 수 있습니다.");
+        }
+
+        int left = btnOpenVersionArchive?.Right + 10 ?? 175;
+        btnExperimentalFeatures.Location = new Point(left, Math.Max(420, tabSettings.ClientSize.Height - 54));
+        btnExperimentalFeatures.BringToFront();
+    }
+
+    private void ShowExperimentalFeaturesMenu()
+    {
+        EnsureExperimentalFeaturesMenu();
+        if (panelExperimentalFeaturesOverlay == null) return;
+
+        ReloadExperimentalFeaturesUI();
+        panelExperimentalFeaturesOverlay.Visible = true;
+        panelExperimentalFeaturesOverlay.BringToFront();
+        PositionExperimentalFeaturesMenu();
+    }
+
+    private void HideExperimentalFeaturesMenu()
+    {
+        if (panelExperimentalFeaturesOverlay != null)
+        {
+            panelExperimentalFeaturesOverlay.Visible = false;
+        }
+    }
+
+    private void EnsureExperimentalFeaturesMenu()
+    {
+        if (panelExperimentalFeaturesOverlay != null) return;
+
+        panelExperimentalFeaturesOverlay = new Panel
+        {
+            Parent = tabSettings,
+            Dock = DockStyle.Fill,
+            BackColor = Color.FromArgb(241, 245, 249),
+            Visible = false
+        };
+        panelExperimentalFeaturesOverlay.Click += (s, e) => HideExperimentalFeaturesMenu();
+        panelExperimentalFeaturesOverlay.Resize += (s, e) => PositionExperimentalFeaturesMenu();
+
+        panelExperimentalFeaturesMenu = new RoundPanel
+        {
+            Parent = panelExperimentalFeaturesOverlay,
+            Size = new Size(500, 320),
+            BackColor = Color.FromArgb(250, 252, 255),
+            BorderRadius = 28,
+            BorderColor = Color.FromArgb(203, 213, 225),
+            BorderThickness = 1
+        };
+
+        var title = new Label
+        {
+            Parent = panelExperimentalFeaturesMenu,
+            Text = "실험 기능",
+            Location = new Point(28, 24),
+            Size = new Size(300, 32),
+            ForeColor = Color.FromArgb(15, 23, 42),
+            Font = new Font("Segoe UI", 15F, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+
+        var hint = new Label
+        {
+            Parent = panelExperimentalFeaturesMenu,
+            Text = "필요한 기능만 켜서 사용해 보세요. 언제든 다시 끌 수 있습니다.",
+            Location = new Point(29, 58),
+            Size = new Size(420, 24),
+            ForeColor = Color.FromArgb(100, 116, 139),
+            Font = new Font("Segoe UI", 9F),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+
+        var closeButton = new RoundButton
+        {
+            Parent = panelExperimentalFeaturesMenu,
+            Text = "X",
+            Size = new Size(34, 34),
+            Location = new Point(442, 22),
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            BorderRadius = 17,
+            BackColor = Color.FromArgb(226, 232, 240),
+            ForeColor = Color.FromArgb(71, 85, 105),
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+            UseVisualStyleBackColor = false
+        };
+        closeButton.FlatAppearance.BorderSize = 0;
+        closeButton.Click += (s, e) => HideExperimentalFeaturesMenu();
+
+        var featureCard = new RoundPanel
+        {
+            Parent = panelExperimentalFeaturesMenu,
+            Location = new Point(28, 102),
+            Size = new Size(444, 126),
+            BackColor = Color.White,
+            BorderRadius = 14,
+            BorderColor = Color.FromArgb(226, 232, 240),
+            BorderThickness = 1
+        };
+
+        chkEnableCompletedFileQuickUse = new CheckBox
+        {
+            Parent = featureCard,
+            Text = "완료 파일 바로 사용",
+            AutoSize = true,
+            Location = new Point(20, 19),
+            ForeColor = Color.FromArgb(15, 23, 42),
+            Font = new Font("Segoe UI", 11F, FontStyle.Bold)
+        };
+        chkEnableCompletedFileQuickUse.CheckedChanged += CompletedFileQuickUse_CheckedChanged;
+
+        var badge = new Label
+        {
+            Parent = featureCard,
+            Text = "실험",
+            Location = new Point(342, 17),
+            Size = new Size(72, 28),
+            BackColor = Color.FromArgb(224, 242, 254),
+            ForeColor = Color.FromArgb(3, 105, 161),
+            Font = new Font("Segoe UI", 8.5F, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+
+        var featureDescription = new Label
+        {
+            Parent = featureCard,
+            Text = "다운로드가 끝나면 파일 카드를 표시합니다.\n카드를 다른 프로그램이나 폴더로 끌어 바로 사용할 수 있습니다.",
+            Location = new Point(22, 55),
+            Size = new Size(392, 52),
+            ForeColor = Color.FromArgb(71, 85, 105),
+            Font = new Font("Segoe UI", 9F),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+
+        var footer = new Label
+        {
+            Parent = panelExperimentalFeaturesMenu,
+            Text = "실험 기능은 기본적으로 꺼져 있으며 기존 기능에는 영향을 주지 않습니다.",
+            Location = new Point(29, 249),
+            Size = new Size(420, 38),
+            ForeColor = Color.FromArgb(100, 116, 139),
+            Font = new Font("Segoe UI", 8.5F),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+
+        var doubleBufferProp = typeof(Control).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        doubleBufferProp?.SetValue(panelExperimentalFeaturesOverlay, true, null);
+        doubleBufferProp?.SetValue(panelExperimentalFeaturesMenu, true, null);
+        doubleBufferProp?.SetValue(featureCard, true, null);
+
+        PositionExperimentalFeaturesMenu();
+    }
+
+    private void PositionExperimentalFeaturesMenu()
+    {
+        if (panelExperimentalFeaturesOverlay == null || panelExperimentalFeaturesMenu == null) return;
+
+        int x = Math.Max(12, (panelExperimentalFeaturesOverlay.ClientSize.Width - panelExperimentalFeaturesMenu.Width) / 2);
+        int y = Math.Max(12, (panelExperimentalFeaturesOverlay.ClientSize.Height - panelExperimentalFeaturesMenu.Height) / 2);
+        panelExperimentalFeaturesMenu.Location = new Point(x, y);
+    }
+
+    private void ReloadExperimentalFeaturesUI()
+    {
+        if (chkEnableCompletedFileQuickUse == null) return;
+
+        _initializingExperimentalFeatures = true;
+        chkEnableCompletedFileQuickUse.Checked = SettingsManager.Settings.EnableCompletedFileQuickUse;
+        _initializingExperimentalFeatures = false;
+    }
+
+    private void CompletedFileQuickUse_CheckedChanged(object? sender, EventArgs e)
+    {
+        if (_initializingExperimentalFeatures || chkEnableCompletedFileQuickUse == null) return;
+
+        SettingsManager.Settings.EnableCompletedFileQuickUse = chkEnableCompletedFileQuickUse.Checked;
+        SettingsManager.Save();
+
+        if (!chkEnableCompletedFileQuickUse.Checked)
+        {
+            _completedFileCard?.Close();
+            _completedFileCard = null;
+        }
+    }
+
+    private void ShowCompletedFileQuickUse(string? filePath)
+    {
+        if (!SettingsManager.Settings.EnableCompletedFileQuickUse ||
+            string.IsNullOrWhiteSpace(filePath) ||
+            !File.Exists(filePath))
+        {
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(new Action(() => ShowCompletedFileQuickUse(filePath)));
+            return;
+        }
+
+        _completedFileCard?.Close();
+
+        var card = new CompletedFileCardForm(filePath);
+        Rectangle workArea = Screen.FromControl(this).WorkingArea;
+        Point location;
+
+        if (_downloadWidgetForm != null && !_downloadWidgetForm.IsDisposed && _downloadWidgetForm.Visible)
+        {
+            int x = _downloadWidgetForm.Left + (_downloadWidgetForm.Width - card.Width) / 2;
+            int y = _downloadWidgetForm.Top - card.Height - 10;
+            location = new Point(
+                Math.Clamp(x, workArea.Left + 8, workArea.Right - card.Width - 8),
+                Math.Clamp(y, workArea.Top + 8, workArea.Bottom - card.Height - 8));
+        }
+        else
+        {
+            Rectangle hostBounds;
+            if (Visible && WindowState != FormWindowState.Minimized && panelMain.Visible)
+            {
+                hostBounds = panelMain.RectangleToScreen(panelMain.ClientRectangle);
+            }
+            else
+            {
+                hostBounds = workArea;
+            }
+            int x = hostBounds.Left + (hostBounds.Width - card.Width) / 2;
+            int y = hostBounds.Top + (hostBounds.Height - card.Height) / 2;
+            location = new Point(
+                Math.Clamp(x, workArea.Left + 8, workArea.Right - card.Width - 8),
+                Math.Clamp(y, workArea.Top + 8, workArea.Bottom - card.Height - 8));
+        }
+
+        card.Location = location;
+        card.FormClosed += (s, e) =>
+        {
+            if (ReferenceEquals(_completedFileCard, card)) _completedFileCard = null;
+        };
+        _completedFileCard = card;
+        card.Show();
+    }
+
     private void BtnOpenVersionArchive_Click(object? sender, EventArgs e)
     {
         try
@@ -1128,7 +1406,7 @@ public partial class Form1 : Form
         catch (Exception ex)
         {
             ShowCenteredMessage(
-                "\uBC84\uC804 \uBCF4\uAD00\uD568\uC744 \uC5F4\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.\n\n" + ex.Message,
+                UserErrorFormatter.Format("버전 보관함을 열지 못했습니다.", ex),
                 "\uBC84\uC804 \uBCF4\uAD00\uD568",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
@@ -1202,7 +1480,7 @@ public partial class Form1 : Form
 
     private static object[] GetKnownSiteNames()
     {
-        return new object[] { "YouTube", "SOOP", "Chzzk", "Instagram", "X", "Anilife", "Linkkf", "WebSite", "Audio" };
+        return new object[] { "YouTube", "SOOP", "Chzzk", "Instagram", "TikTok", "X", "Anilife", "Linkkf", "WebSite", "Audio" };
     }
 
     private void ReloadDownloadRuleSettingsUI()
@@ -1449,6 +1727,7 @@ public partial class Form1 : Form
         if (lower.Contains("sooplive")) return "SOOP";
         if (lower.Contains("chzzk.naver.com") || lower.Contains("pstatic.net")) return "Chzzk";
         if (lower.Contains("instagram.com")) return "Instagram";
+        if (lower.Contains("tiktok.com")) return "TikTok";
         if (lower.Contains("x.com") || lower.Contains("twitter.com")) return "X";
         if (lower.Contains("anilife") || lower.Contains("gcdn.app")) return "Anilife";
         if (lower.Contains("linkkf")) return "Linkkf";
@@ -1741,37 +2020,22 @@ public partial class Form1 : Form
                 lblYtDlpStatus.Text = "필수 도구 다운로드 중... (창을 닫지 마세요)";
                 try
                 {
-                    string ffmpegPath = SettingsManager.GetFFmpegPath();
-                    string ytDlpPath = SettingsManager.GetYtDlpPath();
-                    string toolsDir = Path.GetDirectoryName(ffmpegPath) ?? SettingsManager.UserDataFolder;
-                    if (!Directory.Exists(toolsDir)) Directory.CreateDirectory(toolsDir);
-
                     lblYtDlpStatus.Text = "FFmpeg 다운로드 중... (창을 닫지 마세요)";
-                    if (!File.Exists(ffmpegPath) || !File.Exists(SettingsManager.GetFFprobePath()))
-                    {
-                        // FFmpegDownloader doesn't support downloading to AppData directly if we pass directory. 
-                        // But we will ensure the directory is writable.
-                        await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official, toolsDir);
-                    }
+                    await EnsureFFmpegAsync();
 
-                    // 3. yt-dlp.exe
-                    if (!File.Exists(ytDlpPath))
-                    {
-                        using var client = new HttpClient();
-                        lblYtDlpStatus.Text = "yt-dlp 다운로드 중...";
-                        var res = await client.GetAsync("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe");
-                        res.EnsureSuccessStatusCode();
-                        await using var fs = new FileStream(ytDlpPath, FileMode.Create);
-                        await res.Content.CopyToAsync(fs);
-                    }
+                    lblYtDlpStatus.Text = "yt-dlp 다운로드 중...";
+                    await EnsureYtDlpAsync();
 
-                    Xabe.FFmpeg.FFmpeg.SetExecutablesPath(toolsDir);
                     lblYtDlpStatus.Text = "모든 도구 준비 완료!";
                     ShowCenteredMessage("모든 필수 도구가 성공적으로 설치되었습니다.\n이제 정상적으로 사용할 수 있습니다.", "설치 완료", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch (Exception ex)
                 {
-                    ShowCenteredMessage($"다운로드 중 오류 발생: {ex.Message}\n\n권한 문제가 있을 수 있습니다. 프로그램을 관리자 권한으로 실행하거나 AppData 폴더 쓰기 권한을 확인해 주세요.", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    ShowCenteredMessage(
+                        UserErrorFormatter.Format("필수 도구를 설치하지 못했습니다.", ex),
+                        "필수 도구 설치 오류",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
                     lblYtDlpStatus.Text = "도구 설치 실패";
                 }
             }
@@ -1810,7 +2074,7 @@ public partial class Form1 : Form
             if (hadExistingYtDlp && forceUpdate && _ytDlpForceUpdateChecked) return;
             if (hadExistingYtDlp && !forceUpdate) return;
 
-            if (forceUpdate) SetYtDlpToolStatus("yt-dlp update check...");
+            if (forceUpdate) SetYtDlpToolStatus("yt-dlp 업데이트 확인 중...");
 
             Directory.CreateDirectory(Path.GetDirectoryName(ytdlpPath) ?? AppDomain.CurrentDomain.BaseDirectory);
             string tempPath = ytdlpPath + ".download";
@@ -1819,7 +2083,7 @@ public partial class Form1 : Form
             try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
 
             using var client = new HttpClient();
-            if (forceUpdate) SetYtDlpToolStatus("yt-dlp downloading latest file...");
+            if (forceUpdate) SetYtDlpToolStatus("최신 yt-dlp 다운로드 중...");
             var response = await client.GetAsync("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe", ct);
             response.EnsureSuccessStatusCode();
 
@@ -1828,10 +2092,10 @@ public partial class Form1 : Form
                 await response.Content.CopyToAsync(fs, ct);
             }
 
-            if (forceUpdate) SetYtDlpToolStatus("yt-dlp validating new file...");
+            if (forceUpdate) SetYtDlpToolStatus("새 yt-dlp 파일 확인 중...");
             await ValidateYtDlpExecutableAsync(tempPath, ct);
 
-            if (forceUpdate) SetYtDlpToolStatus("yt-dlp applying latest file...");
+            if (forceUpdate) SetYtDlpToolStatus("최신 yt-dlp 적용 중...");
             if (File.Exists(ytdlpPath))
             {
                 try { if (File.Exists(backupPath)) File.Delete(backupPath); } catch { }
@@ -1845,7 +2109,7 @@ public partial class Form1 : Form
             if (forceUpdate)
             {
                 _ytDlpForceUpdateChecked = true;
-                SetYtDlpToolStatus("yt-dlp updated. Starting download...");
+                SetYtDlpToolStatus("yt-dlp 업데이트 완료. 다운로드를 시작합니다...");
             }
         }
         catch (Exception ex)
@@ -1855,13 +2119,13 @@ public partial class Form1 : Form
             if (forceUpdate && hadExistingYtDlp && File.Exists(ytdlpPath))
             {
                 _ytDlpForceUpdateChecked = true;
-                SetYtDlpToolStatus("yt-dlp update failed. Continuing with existing file...");
-                ReportError($"yt-dlp update failed, existing file kept | URL: {txtYtDlpUrl.Text}", ex);
+                SetYtDlpToolStatus("yt-dlp 업데이트 실패. 기존 파일로 계속 진행합니다...");
+                ReportError("다운로드 엔진", "yt-dlp 자동 업데이트", $"yt-dlp update failed, existing file kept | URL: {txtYtDlpUrl.Text}", ex);
                 return;
             }
 
-            SetYtDlpToolStatus($"yt-dlp prepare failed: {ex.Message}");
-            ReportError($"tool download failed | URL: {txtYtDlpUrl.Text}", ex);
+            SetYtDlpToolStatus($"yt-dlp 준비 실패: {UserErrorFormatter.GetCause(FlattenExceptionMessage(ex))}");
+            ReportError("다운로드 엔진", "yt-dlp 설치", $"tool download failed | URL: {txtYtDlpUrl.Text}", ex);
             throw;
         }
         finally
@@ -1869,6 +2133,130 @@ public partial class Form1 : Form
             _ytDlpInstallSemaphore.Release();
         }
     }
+
+    private async Task EnsureYouTubeExtractionToolsAsync(CancellationToken ct = default)
+    {
+        await EnsureYtDlpAsync(ct, forceUpdate: true);
+
+        try
+        {
+            await EnsureDenoAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            // Some YouTube formats still work without Deno, so keep the existing fallback available.
+            ReportError("유튜브 다운로더", "Deno 보안 엔진 준비", "YouTube JavaScript runtime setup failed", ex);
+        }
+    }
+
+    private async Task EnsureDenoAsync(CancellationToken ct = default)
+    {
+        string denoPath = SettingsManager.GetDenoPath();
+        if (_denoReadyChecked && File.Exists(denoPath) && HasMzHeader(denoPath)) return;
+
+        await _denoInstallSemaphore.WaitAsync(ct);
+        try
+        {
+            if (File.Exists(denoPath) && HasMzHeader(denoPath))
+            {
+                try
+                {
+                    await ValidateDenoExecutableAsync(denoPath, ct);
+                    _denoReadyChecked = true;
+                    return;
+                }
+                catch
+                {
+                    try { File.Delete(denoPath); } catch { }
+                }
+            }
+            else if (File.Exists(denoPath))
+            {
+                try { File.Delete(denoPath); } catch { }
+            }
+
+            string toolsDir = Path.GetDirectoryName(denoPath) ?? SettingsManager.UserDataFolder;
+            Directory.CreateDirectory(toolsDir);
+
+            string zipPath = denoPath + ".zip.download";
+            string tempExePath = denoPath + ".download";
+            try { if (File.Exists(zipPath)) File.Delete(zipPath); } catch { }
+            try { if (File.Exists(tempExePath)) File.Delete(tempExePath); } catch { }
+
+            SetYtDlpToolStatus("YouTube 보안 엔진 준비 중...");
+            using (var client = new HttpClient())
+            using (var response = await client.GetAsync(
+                "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip",
+                HttpCompletionOption.ResponseHeadersRead,
+                ct))
+            {
+                response.EnsureSuccessStatusCode();
+                await using var output = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None);
+                await response.Content.CopyToAsync(output, ct);
+            }
+
+            using (var archive = ZipFile.OpenRead(zipPath))
+            {
+                ZipArchiveEntry? denoEntry = archive.Entries.FirstOrDefault(entry =>
+                    entry.Name.Equals("deno.exe", StringComparison.OrdinalIgnoreCase));
+                if (denoEntry == null)
+                    throw new InvalidDataException("Deno archive does not contain deno.exe.");
+
+                denoEntry.ExtractToFile(tempExePath, overwrite: true);
+            }
+
+            await ValidateDenoExecutableAsync(tempExePath, ct);
+
+            if (File.Exists(denoPath))
+                File.Replace(tempExePath, denoPath, null, ignoreMetadataErrors: true);
+            else
+                File.Move(tempExePath, denoPath);
+
+            _denoReadyChecked = true;
+            SetYtDlpToolStatus("YouTube 보안 엔진 준비 완료");
+
+            try { File.Delete(zipPath); } catch { }
+        }
+        finally
+        {
+            try { File.Delete(denoPath + ".zip.download"); } catch { }
+            try { File.Delete(denoPath + ".download"); } catch { }
+            _denoInstallSemaphore.Release();
+        }
+    }
+
+    private static async Task ValidateDenoExecutableAsync(string denoPath, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = denoPath,
+            Arguments = "--version",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+
+        using var process = new Process { StartInfo = psi };
+        process.Start();
+        string output = await process.StandardOutput.ReadToEndAsync(ct);
+        string error = await process.StandardError.ReadToEndAsync(ct);
+        await process.WaitForExitAsync(ct);
+
+        if (process.ExitCode != 0 || !output.Contains("deno", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Downloaded deno.exe validation failed: " + error.Trim());
+    }
+
+    private static string GetYtDlpJavaScriptRuntimeArguments()
+    {
+        string denoPath = SettingsManager.GetDenoPath();
+        return File.Exists(denoPath)
+            ? $"--js-runtimes \"deno:{denoPath}\" "
+            : "";
+    }
+
     private static async Task ValidateYtDlpExecutableAsync(string ytdlpPath, CancellationToken ct)
     {
         var psi = new ProcessStartInfo
@@ -1914,6 +2302,7 @@ public partial class Form1 : Form
 
         if (tabControlMain.SelectedTab == tabSettings && btn != btnTabSettings)
         {
+            HideExperimentalFeaturesMenu();
             ReloadSettingsUI();
         }
 
@@ -1990,6 +2379,43 @@ public partial class Form1 : Form
 
         string lower = input.ToLowerInvariant();
         return lower.Contains("youtube.com/") || lower.Contains("youtu.be/");
+    }
+
+    private static bool IsYouTubeSingleVideoInput(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+
+        string input = value.Trim();
+        if (IsValidYouTubeVideoId(input)) return true;
+        if (!Uri.TryCreate(input, UriKind.Absolute, out var uri)) return false;
+
+        string host = uri.Host.ToLowerInvariant();
+        if (host == "youtu.be")
+            return IsValidYouTubeVideoId(uri.AbsolutePath.Trim('/').Split('/')[0]);
+
+        bool isYouTubeHost = host == "youtube.com"
+            || host.EndsWith(".youtube.com")
+            || host == "youtube-nocookie.com"
+            || host.EndsWith(".youtube-nocookie.com");
+        if (!isYouTubeHost) return false;
+
+        string path = uri.AbsolutePath.Trim('/');
+        if (path.Equals("watch", StringComparison.OrdinalIgnoreCase))
+            return IsValidYouTubeVideoId(GetQueryParameterValue(uri.Query, "v"));
+
+        string[] segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return segments.Length >= 2
+            && (segments[0].Equals("shorts", StringComparison.OrdinalIgnoreCase)
+                || segments[0].Equals("live", StringComparison.OrdinalIgnoreCase)
+                || segments[0].Equals("embed", StringComparison.OrdinalIgnoreCase)
+                || segments[0].Equals("v", StringComparison.OrdinalIgnoreCase))
+            && IsValidYouTubeVideoId(segments[1]);
+    }
+
+    private static bool IsValidYouTubeVideoId(string value)
+    {
+        return value.Length == 11
+            && value.All(c => char.IsLetterOrDigit(c) || c == '_' || c == '-');
     }
 
     private static string NormalizeYouTubeSingleVideoUrl(string url)
@@ -2079,6 +2505,7 @@ public partial class Form1 : Form
                lower.Contains("signature") ||
                lower.Contains("player") ||
                lower.Contains("manifest") ||
+               lower.Contains("object reference not set") ||
                lower.Contains("video is unavailable") ||
                lower.Contains("sign in to confirm your age") ||
                lower.Contains("requested format is not available") ||
@@ -2164,40 +2591,62 @@ public partial class Form1 : Form
         }
     }
 
-    private async Task RouteToYoutubeDownloadAsync(string url)
+    private async Task RouteToYoutubeDownloadAsync(
+        string url,
+        string sourceFeature = "웹사이트 영상 다운 → 유튜브 다운로더")
     {
-        txtUrl.Text = url;
-        chkYoutubeDownloadSubtitles.Checked = chkYtDlpDownloadSubtitles.Checked;
-        if (cmbYoutubeSubtitleLanguage != null && cmbYtDlpSubtitleLanguage != null)
+        _pendingYoutubeSourceFeature = sourceFeature;
+        try
         {
-            SelectComboText(cmbYoutubeSubtitleLanguage, cmbYtDlpSubtitleLanguage.Text);
+            if (!IsYouTubeSingleVideoInput(url))
+            {
+                const string message = "YouTube 영상 페이지를 연 뒤 다시 시도해 주세요. YouTube 홈, 채널, 추천 화면은 다운로드하지 않습니다.";
+                lblYtDlpStatus.Text = message;
+                lblStatus.Text = message;
+                _downloadWidgetForm?.SetProgress(null);
+                _downloadWidgetForm?.SetStatus(message);
+                _downloadWidgetForm?.ShowToast("YouTube 영상 페이지를 찾지 못했습니다.");
+                return;
+            }
+
+            txtUrl.Text = url;
+            chkYoutubeDownloadSubtitles.Checked = chkYtDlpDownloadSubtitles.Checked;
+            if (cmbYoutubeSubtitleLanguage != null && cmbYtDlpSubtitleLanguage != null)
+            {
+                SelectComboText(cmbYoutubeSubtitleLanguage, cmbYtDlpSubtitleLanguage.Text);
+            }
+            lblYtDlpStatus.Text = "유튜브 주소는 유튜브 다운로더 탭으로 이동합니다.";
+            lblStatus.Text = "유튜브 영상 정보를 확인한 뒤 다운로드 대기열에 추가합니다.";
+
+            SelectMainTab(btnTabYoutube, tabYoutube);
+            txtUrl.Focus();
+            _currentVideo = null!;
+            _streamManifest = null!;
+            cmbQuality.Items.Clear();
+            cmbQuality.SelectedIndex = -1;
+            cmbQuality.Enabled = false;
+            picThumbnail.Image = null;
+            BtnLoad_Click(this, EventArgs.Empty);
+
+            for (int i = 0; i < 150; i++)
+            {
+                await Task.Delay(200);
+                if (!string.IsNullOrWhiteSpace(_customTitle) && cmbQuality.SelectedItem != null)
+                {
+                    _pendingYoutubeSourceFeature = sourceFeature;
+                    BtnAddQueue_Click(this, EventArgs.Empty);
+                    return;
+                }
+
+                if (btnLoad.Enabled && (_currentVideo == null || _streamManifest == null))
+                {
+                    return;
+                }
+            }
         }
-        lblYtDlpStatus.Text = "유튜브 주소는 유튜브 다운로더 탭으로 이동합니다.";
-        lblStatus.Text = "유튜브 영상 정보를 확인한 뒤 다운로드 대기열에 추가합니다.";
-
-        SelectMainTab(btnTabYoutube, tabYoutube);
-        txtUrl.Focus();
-        _currentVideo = null!;
-        _streamManifest = null!;
-        cmbQuality.Items.Clear();
-        cmbQuality.SelectedIndex = -1;
-        cmbQuality.Enabled = false;
-        picThumbnail.Image = null;
-        BtnLoad_Click(this, EventArgs.Empty);
-
-        for (int i = 0; i < 150; i++)
+        finally
         {
-            await Task.Delay(200);
-            if (!string.IsNullOrWhiteSpace(_customTitle) && cmbQuality.SelectedItem != null)
-            {
-                BtnAddQueue_Click(this, EventArgs.Empty);
-                return;
-            }
-
-            if (btnLoad.Enabled && (_currentVideo == null || _streamManifest == null))
-            {
-                return;
-            }
+            _pendingYoutubeSourceFeature = "유튜브 다운로더";
         }
     }
 
@@ -2634,10 +3083,19 @@ public partial class Form1 : Form
 
         int added = 0;
         string lastRejectReason = "";
+        string sourceFeature = _returnToWidgetAfterVideoPick
+            ? "위젯 모드 / 영상 선택 다운로드"
+            : "웹사이트 영상 다운 / 영상 선택";
         foreach (var item in list)
         {
             string queueUrl = item.PlaylistIndex > 0 && IsHttpUrl(item.SourcePageUrl) ? item.SourcePageUrl : item.Url;
-            if (EnqueueYtDlpDownload(queueUrl, allowFolderPrompt: false, out string rejectReason, item.PlaylistIndex, item.Title))
+            if (EnqueueYtDlpDownload(
+                    queueUrl,
+                    allowFolderPrompt: false,
+                    out string rejectReason,
+                    item.PlaylistIndex,
+                    item.Title,
+                    sourceFeature))
             {
                 added++;
             }
@@ -2715,7 +3173,7 @@ public partial class Form1 : Form
             {
                 bool youtubeWasRunning = _isDownloading || !_downloadQueue.IsEmpty;
                 int itemCountBefore = lvQueue.Items.Count;
-                await RouteToYoutubeDownloadAsync(text);
+                await RouteToYoutubeDownloadAsync(text, "위젯 모드 / YouTube 다운로드");
                 if (lvQueue.Items.Count <= itemCountBefore)
                 {
                     _downloadWidgetForm?.SetProgress(null);
@@ -2738,7 +3196,11 @@ public partial class Form1 : Form
             }
 
             bool wasRunning = _isYtDlpQueueRunning || !_ytDlpDownloadQueue.IsEmpty;
-            if (!EnqueueYtDlpDownload(text, allowFolderPrompt: false, out string rejectReason))
+            if (!EnqueueYtDlpDownload(
+                    text,
+                    allowFolderPrompt: false,
+                    out string rejectReason,
+                    sourceFeature: "위젯 모드 / 웹사이트 다운로드"))
             {
                 if (!string.IsNullOrWhiteSpace(rejectReason))
                 {
@@ -2758,7 +3220,7 @@ public partial class Form1 : Form
         }
         catch (Exception ex)
         {
-            ReportError($"위젯 다운로드 추가 실패 | URL: {text}", ex);
+            ReportError("위젯 모드", "URL 감지 및 대기열 추가", $"위젯 다운로드 추가 실패 | URL: {text}", ex);
             _downloadWidgetForm?.SetProgress(null);
             _downloadWidgetForm?.SetStatus("대기열 추가 실패. 앱을 열어 오류 내용을 확인해 주세요.");
         }
@@ -3014,6 +3476,103 @@ public partial class Form1 : Form
         }
     }
 
+    private (DialogResult Result, bool SkipThisVersion) ShowUpdateAvailableDialog(string latestVersion)
+    {
+        if (InvokeRequired)
+        {
+            return (ValueTuple<DialogResult, bool>)Invoke(
+                new Func<(DialogResult, bool)>(() => ShowUpdateAvailableDialog(latestVersion)));
+        }
+
+        bool useWidgetOwner = _downloadWidgetForm != null &&
+                              !_downloadWidgetForm.IsDisposed &&
+                              _downloadWidgetForm.Visible &&
+                              !Visible;
+        IWin32Window owner = useWidgetOwner ? _downloadWidgetForm! : this;
+        Rectangle ownerBounds = useWidgetOwner
+            ? Screen.FromControl(_downloadWidgetForm!).WorkingArea
+            : WindowState == FormWindowState.Maximized
+                ? Screen.FromControl(this).WorkingArea
+                : WindowState == FormWindowState.Minimized ? RestoreBounds : Bounds;
+
+        if (ownerBounds.Width <= 0 || ownerBounds.Height <= 0)
+            ownerBounds = Screen.FromControl(useWidgetOwner ? _downloadWidgetForm! : this).WorkingArea;
+
+        using var dialog = new Form
+        {
+            Text = "업데이트 알림",
+            ClientSize = new Size(500, 225),
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            BackColor = Color.White,
+            Font = Font,
+            TopMost = useWidgetOwner
+        };
+
+        var title = new Label
+        {
+            Text = $"새 버전 v{latestVersion}가 있습니다.",
+            Location = new Point(28, 24),
+            Size = new Size(444, 30),
+            Font = new Font(Font, FontStyle.Bold)
+        };
+        var description = new Label
+        {
+            Text = "지금 다운로드하여 설치하시겠습니까?\n설치 중 프로그램이 자동으로 종료된 후 다시 시작될 수 있습니다.",
+            Location = new Point(28, 62),
+            Size = new Size(444, 52)
+        };
+        var skipCheckBox = new CheckBox
+        {
+            Text = "이 버전 알림 다시 보지 않기",
+            Location = new Point(28, 128),
+            AutoSize = true
+        };
+        var updateButton = new Button
+        {
+            Text = "업데이트",
+            DialogResult = DialogResult.Yes,
+            Location = new Point(252, 172),
+            Size = new Size(105, 34),
+            BackColor = Color.FromArgb(14, 149, 220),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        updateButton.FlatAppearance.BorderSize = 0;
+
+        var laterButton = new Button
+        {
+            Text = "나중에",
+            DialogResult = DialogResult.No,
+            Location = new Point(367, 172),
+            Size = new Size(105, 34),
+            BackColor = Color.FromArgb(230, 235, 241),
+            ForeColor = Color.FromArgb(35, 48, 65),
+            FlatStyle = FlatStyle.Flat
+        };
+        laterButton.FlatAppearance.BorderSize = 0;
+
+        dialog.Controls.AddRange(new Control[] { title, description, skipCheckBox, updateButton, laterButton });
+        dialog.AcceptButton = updateButton;
+        dialog.CancelButton = laterButton;
+        dialog.Shown += (_, _) =>
+        {
+            int x = ownerBounds.Left + (ownerBounds.Width - dialog.Width) / 2;
+            int y = ownerBounds.Top + (ownerBounds.Height - dialog.Height) / 2;
+            Rectangle workingArea = Screen.FromRectangle(ownerBounds).WorkingArea;
+            dialog.Location = new Point(
+                Math.Max(workingArea.Left, Math.Min(x, workingArea.Right - dialog.Width)),
+                Math.Max(workingArea.Top, Math.Min(y, workingArea.Bottom - dialog.Height)));
+            dialog.Activate();
+        };
+
+        DialogResult result = dialog.ShowDialog(owner);
+        return (result, skipCheckBox.Checked);
+    }
+
     private static IntPtr CenterMessageBoxHook(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode == HCBT_ACTIVATE && wParam != IntPtr.Zero)
@@ -3065,54 +3624,101 @@ public partial class Form1 : Form
 
     private static string GetDownloadFailureCause(Exception ex)
     {
-        string message = FlattenExceptionMessage(ex);
-        string lower = message.ToLowerInvariant();
+        return UserErrorFormatter.GetCause(FlattenExceptionMessage(ex));
+    }
 
-        if (lower.Contains("403") || lower.Contains("forbidden"))
-            return "403 차단";
+    private static bool IsLoginRequiredDownloadError(Exception ex)
+    {
+        string lower = FlattenExceptionMessage(ex).ToLowerInvariant();
+        return lower.Contains("instagram sent an empty media response") ||
+               lower.Contains("use --cookies-from-browser") ||
+               lower.Contains("use --cookies for the authentication") ||
+               lower.Contains("login required") ||
+               lower.Contains("sign in") ||
+               lower.Contains("members-only") ||
+               lower.Contains("members only") ||
+               lower.Contains("private video") ||
+               lower.Contains("age-restricted") ||
+               lower.Contains("confirm you're not a bot");
+    }
 
-        if (lower.Contains("401") || lower.Contains("login") || lower.Contains("sign in") ||
-            lower.Contains("cookies") || message.Contains("로그인") || message.Contains("비공개") || message.Contains("인증"))
-            return "로그인 필요";
+    private static string GetLoginSiteNameForUrl(string url)
+    {
+        string lower = url.ToLowerInvariant();
+        if (lower.Contains("instagram.com")) return "Instagram";
+        if (lower.Contains("tiktok.com")) return "TikTok";
+        if (lower.Contains("youtube.com") || lower.Contains("youtu.be")) return "YouTube";
+        if (lower.Contains("chzzk.naver.com")) return "치지직";
+        if (lower.Contains("sooplive") || lower.Contains("afreecatv.com")) return "SOOP";
+        if (lower.Contains("x.com") || lower.Contains("twitter.com")) return "X";
+        return "웹 브라우저";
+    }
 
-        if (lower.Contains("ffmpeg") || lower.Contains("conversion failed") ||
-            message.Contains("변환 실패") || message.Contains("MP4 변환 실패"))
-            return "ffmpeg 변환 실패";
+    private async Task<bool> HandleLoginRequiredDownloadErrorAsync(string url, Exception ex, bool alreadyInLoginBrowser)
+    {
+        if (!IsLoginRequiredDownloadError(ex)) return false;
 
-        if (lower.Contains("requested format is not available"))
-            return "사용 가능한 영상 포맷 없음";
+        string siteName = GetLoginSiteNameForUrl(url);
+        if (alreadyInLoginBrowser)
+        {
+            ShowCenteredMessage(
+                $"{siteName} 로그인 또는 시청 권한을 확인해 주세요.\n\n브라우저에서 해당 영상이 정상 재생되는지 확인한 뒤 다시 다운로드해 주세요.",
+                "로그인 확인 필요",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return true;
+        }
 
-        if (lower.Contains("m3u8") || lower.Contains("manifest") || lower.Contains("hls") ||
-            message.Contains("스트림 URL") || message.Contains("영상 정보를 자동") || message.Contains("재생 정보"))
-            return "m3u8 추출 실패";
+        string prompt = siteName == "Instagram"
+            ? "Instagram 로그인이 필요한 영상입니다.\n\n로그인하시면 다운로드할 수 있습니다.\n지금 [로그인 후 다운]을 열어 로그인하시겠습니까?"
+            : $"이 영상은 {siteName} 로그인이 필요한 것으로 보입니다.\n\n로그인하시면 다운로드할 수 있습니다.\n지금 [로그인 후 다운]을 열어 로그인하시겠습니까?";
 
-        if (lower.Contains("unsupported url") || lower.Contains("unable to extract") ||
-            lower.Contains("extractor") || lower.Contains("no video formats") || lower.Contains("not supported"))
-            return "사이트 구조 변경 가능성";
+        DialogResult result = ShowCenteredMessage(
+            prompt,
+            "로그인 필요",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Information);
 
-        if (lower.Contains("timed out") || lower.Contains("timeout") || message.Contains("시간"))
-            return "네트워크 시간 초과";
+        if (result == DialogResult.Yes)
+        {
+            await OpenLoginDownloadForUrlAsync(siteName, url);
+        }
 
-        if (lower.Contains("404") || lower.Contains("not found"))
-            return "영상 삭제 또는 주소 오류";
+        return true;
+    }
 
-        return "원인 확인 필요";
+    private async Task OpenLoginDownloadForUrlAsync(string siteName, string url)
+    {
+        if (!Visible || SettingsManager.Settings.EnableWidgetMode)
+        {
+            ShowMainFromWidget();
+        }
+
+        SelectMainTab(btnTabYtDlp, tabYtDlp);
+        txtYtDlpUrl.Text = url;
+
+        if (siteName == "Instagram")
+        {
+            _isLoginBrowserMode = false;
+            if (tglXPrivateMode.Checked) tglXPrivateMode.Checked = false;
+            if (!tglInstaPrivateMode.Checked) tglInstaPrivateMode.Checked = true;
+            return;
+        }
+
+        _isLoginBrowserMode = true;
+        _lastWidth = Math.Max(Width, 800);
+        _lastHeight = Math.Max(Height, 600);
+
+        await ShowLoginBrowserAsync(siteName, url);
+        if (lblXGuide != null)
+            lblXGuide.Text = $"{siteName}에 로그인한 뒤 영상이 재생되면 좌측 상단 즉시 다운로드를 눌러주세요.";
+        if (lblXStatus != null)
+            lblXStatus.Text = "로그인 후 영상을 확인해 주세요.";
     }
 
     private static string GetDownloadFailureHint(string cause)
     {
-        return cause switch
-        {
-            "m3u8 추출 실패" => "영상 주소를 찾지 못했습니다. 사이트 구조가 바뀌었거나 플레이어 로딩이 막혔을 수 있습니다.",
-            "403 차단" => "사이트가 다운로드 요청을 차단했습니다. 로그인/쿠키, Referer, 지역 제한 또는 봇 차단 가능성이 있습니다.",
-            "ffmpeg 변환 실패" => "영상 조각은 받았지만 MP4 병합 또는 변환에 실패했습니다. ffmpeg, 파일 경로, 원본 스트림 상태를 확인해야 합니다.",
-            "로그인 필요" => "로그인이 필요한 영상일 수 있습니다. 로그인 후 다운 화면에서 로그인한 뒤 다시 시도해 보세요.",
-            "사용 가능한 영상 포맷 없음" => "영상에서 받을 수 있는 포맷을 찾지 못했습니다. 로그인 권한, 라이브 상태, yt-dlp 최신 구조 대응 여부를 확인해야 합니다.",
-            "사이트 구조 변경 가능성" => "현재 추출 방식이 사이트의 최신 구조와 맞지 않을 수 있습니다.",
-            "네트워크 시간 초과" => "사이트 응답이 느리거나 네트워크가 불안정합니다. 잠시 뒤 다시 시도해 보세요.",
-            "영상 삭제 또는 주소 오류" => "영상이 삭제되었거나 주소가 잘못되었을 수 있습니다.",
-            _ => "상세 오류를 보고 원인을 확인해야 합니다. (제작자에게 문의해 주세요)"
-        };
+        return UserErrorFormatter.GetHint(cause);
     }
 
     private static string BuildDownloadFailureMessage(string url, Exception ex)
@@ -3203,6 +3809,13 @@ public partial class Form1 : Form
             return;
         }
 
+        if (!IsYouTubeSingleVideoInput(url))
+        {
+            ShowCenteredMessage("YouTube 영상 주소를 입력해 주세요. 홈, 채널, 추천 화면 주소는 다운로드할 수 없습니다.", "알림", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            lblVideoTitle.Text = "YouTube 영상 페이지 주소를 확인해 주세요.";
+            return;
+        }
+
         try
         {
             btnLoad.Enabled = false;
@@ -3285,9 +3898,13 @@ public partial class Form1 : Form
         catch (Exception ex)
         {
             cmbQuality.Enabled = false;
-            ShowCenteredMessage($"오류: {ex.Message}", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ShowCenteredMessage(
+                UserErrorFormatter.Format("유튜브 영상 정보를 불러오지 못했습니다.", ex),
+                "영상 정보 오류",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
             lblVideoTitle.Text = "오류가 발생했습니다.";
-            ReportError($"유튜브 정보 로드 실패 | URL: {url}", ex);
+            ReportError(_pendingYoutubeSourceFeature, "영상 정보 조회", $"유튜브 정보 로드 실패 | URL: {url}", ex);
         }
         finally
         {
@@ -3367,7 +3984,8 @@ public partial class Form1 : Form
             JobCts = new CancellationTokenSource(),
             CustomFileName = _customTitle,
             DownloadSubtitles = chkYoutubeDownloadSubtitles.Checked,
-            SubtitleLanguagePreset = GetSelectedSubtitlePreset(cmbYoutubeSubtitleLanguage)
+            SubtitleLanguagePreset = GetSelectedSubtitlePreset(cmbYoutubeSubtitleLanguage),
+            SourceFeature = _pendingYoutubeSourceFeature
         };
         
         item.Tag = job;
@@ -3398,10 +4016,23 @@ public partial class Form1 : Form
         return EnqueueYtDlpDownload(url, allowFolderPrompt, out _);
     }
 
-    private bool EnqueueYtDlpDownload(string url, bool allowFolderPrompt, out string rejectReason, int playlistItemIndex = 0, string preferredTitle = "")
+    private bool EnqueueYtDlpDownload(
+        string url,
+        bool allowFolderPrompt,
+        out string rejectReason,
+        int playlistItemIndex = 0,
+        string preferredTitle = "",
+        string sourceFeature = "웹사이트 영상 다운")
     {
         rejectReason = "";
         url = NormalizeYouTubeSingleVideoUrl(url);
+        if (LooksLikeYouTubeInput(url) && !IsYouTubeSingleVideoInput(url))
+        {
+            rejectReason = "YouTube 영상 페이지를 열어 주세요. 홈, 채널, 추천 화면은 다운로드하지 않습니다.";
+            lblYtDlpStatus.Text = rejectReason;
+            return false;
+        }
+
         if (IsYtDlpUrlInFlight(url, playlistItemIndex))
         {
             rejectReason = "이미 다운로드 중인 URL입니다. 완료된 뒤 다시 누르면 새 파일로 받을 수 있습니다.";
@@ -3436,6 +4067,15 @@ public partial class Form1 : Form
         lvYtDlpQueue.Items.Add(item);
         ResizeYtDlpQueueColumns();
 
+        bool usesExplicitLogin = _isLoginBrowserMode || tglXPrivateMode.Checked || tglInstaPrivateMode.Checked;
+        string effectiveSourceFeature = sourceFeature;
+        if (usesExplicitLogin)
+        {
+            effectiveSourceFeature = sourceFeature == "웹사이트 영상 다운"
+                ? "로그인 후 다운"
+                : sourceFeature + " / 로그인 쿠키";
+        }
+
         var job = new YtDlpDownloadJob
         {
             Id = Guid.NewGuid().ToString("N"),
@@ -3449,7 +4089,8 @@ public partial class Form1 : Form
             PlaylistItemIndex = playlistItemIndex,
             UseXPrivateMode = tglXPrivateMode.Checked,
             UseInstaPrivateMode = tglInstaPrivateMode.Checked,
-            UseLoginBrowserCookies = _isLoginBrowserMode || ShouldUseLoginBrowserCookiesForUrl(url),
+            UseLoginBrowserCookies = _isLoginBrowserMode,
+            SourceFeature = effectiveSourceFeature,
             ListViewItem = item,
             JobCts = new CancellationTokenSource()
         };
@@ -3557,9 +4198,13 @@ public partial class Form1 : Form
         {
             _lastYtDlpPct = -1;
             _ytDlpCts = job.JobCts;
-            UpdateYtDlpJobStatus(job, "yt-dlp 확인 중...");
-            lblYtDlpStatus.Text = "yt-dlp 확인 중...";
-            await EnsureYtDlpAsync(job.JobCts.Token);
+            UpdateYtDlpJobStatus(job, "필수 도구 확인 중...");
+            lblYtDlpStatus.Text = "필수 도구 확인 중...";
+            await EnsureFFmpegAsync(job.JobCts.Token);
+            if (LooksLikeYouTubeInput(url))
+                await EnsureYouTubeExtractionToolsAsync(job.JobCts.Token);
+            else
+                await EnsureYtDlpAsync(job.JobCts.Token);
 
             UpdateYtDlpJobStatus(job, "다운로드 준비 중...");
             lblYtDlpStatus.Text = "다운로드 준비 중...";
@@ -3591,13 +4236,17 @@ public partial class Form1 : Form
             downloader.WebViewResolver = async targetUrl =>
             {
                 await _ytDlpBrowserSemaphore.WaitAsync(job.JobCts.Token);
+                bool genericCaptureEnabled = false;
                 try
                 {
                     string capturedUrl = "";
                     bool isAnilife = targetUrl.Contains("anilife.app", StringComparison.OrdinalIgnoreCase);
                     bool needsBrowserCapture = isAnilife ||
                         targetUrl.Contains("chzzk.naver.com", StringComparison.OrdinalIgnoreCase) ||
-                        targetUrl.Contains("sooplive", StringComparison.OrdinalIgnoreCase);
+                        targetUrl.Contains("sooplive", StringComparison.OrdinalIgnoreCase) ||
+                        targetUrl.Contains("linkkf.drewpx.xyz", StringComparison.OrdinalIgnoreCase);
+                    genericCaptureEnabled = !needsBrowserCapture;
+                    if (genericCaptureEnabled) Interlocked.Increment(ref _genericMediaCaptureDepth);
                     try
                     {
                         if (webViewX.CoreWebView2 == null) await PreInitializeWebView2Async();
@@ -3606,12 +4255,12 @@ public partial class Form1 : Form
 
                     this.Invoke((MethodInvoker)(() =>
                     {
-                        _capturedM3u8Url = "";
+                        ClearCapturedMediaCandidates();
                         if (webViewX.CoreWebView2 == null) return;
                         webViewX.CoreWebView2.Navigate(targetUrl);
                     }));
 
-                    int maxAttempts = isAnilife ? 90 : needsBrowserCapture ? 60 : 40;
+                    int maxAttempts = isAnilife ? 90 : needsBrowserCapture ? 60 : 24;
                     for (int i = 0; i < maxAttempts; i++)
                     {
                         await Task.Delay(500, job.JobCts.Token);
@@ -3630,9 +4279,25 @@ public partial class Form1 : Form
                             }));
                         }
 
-                        if (!string.IsNullOrEmpty(_capturedM3u8Url) && LooksLikeCapturedMediaUrl(_capturedM3u8Url))
+                        if (!needsBrowserCapture && i == 6)
                         {
-                            capturedUrl = _capturedM3u8Url;
+                            this.Invoke((MethodInvoker)(async () =>
+                            {
+                                try
+                                {
+                                    if (webViewX.CoreWebView2 != null)
+                                    {
+                                        await webViewX.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('video').forEach(v => { v.muted = true; v.play().catch(() => {}); }); window.scrollTo(0, Math.max(document.body.scrollHeight / 3, 1));");
+                                    }
+                                }
+                                catch { }
+                            }));
+                        }
+
+                        string bestCapturedUrl = GetBestCapturedMediaUrl();
+                        if (!string.IsNullOrEmpty(bestCapturedUrl) && (needsBrowserCapture || i >= 8))
+                        {
+                            capturedUrl = bestCapturedUrl;
                             break;
                         }
                     }
@@ -3650,6 +4315,19 @@ public partial class Form1 : Form
                 }
                 finally
                 {
+                    if (genericCaptureEnabled) Interlocked.Decrement(ref _genericMediaCaptureDepth);
+                    try
+                    {
+                        this.Invoke((MethodInvoker)(() =>
+                        {
+                            if (webViewX.CoreWebView2 != null)
+                            {
+                                webViewX.CoreWebView2.Stop();
+                                webViewX.CoreWebView2.Navigate("about:blank");
+                            }
+                        }));
+                    }
+                    catch { }
                     _ytDlpBrowserSemaphore.Release();
                 }
             };
@@ -3687,6 +4365,7 @@ public partial class Form1 : Form
                     {
                         cookieFile = Path.Combine(SettingsManager.UserDataFolder, $"temp_x_cookies_{job.Id}.txt");
                         File.Copy(exportedCookieFile, cookieFile, true);
+                        CleanupManager.RegisterFile(cookieFile);
                         try { File.Delete(exportedCookieFile); } catch { }
                     }
 
@@ -3697,8 +4376,11 @@ public partial class Form1 : Form
                         if (!string.IsNullOrEmpty(_capturedAuthToken)) customHeaders["authorization"] = _capturedAuthToken;
                         if (!string.IsNullOrEmpty(_capturedCsrfToken)) customHeaders["x-csrf-token"] = _capturedCsrfToken;
                         if (!string.IsNullOrEmpty(_capturedUserAgent)) customHeaders["User-Agent"] = _capturedUserAgent;
-                        string cookieHeader = await BuildWebViewCookieHeaderAsync();
-                        if (!string.IsNullOrWhiteSpace(cookieHeader)) customHeaders["Cookie"] = cookieHeader;
+                        if (string.IsNullOrEmpty(cookieFile))
+                        {
+                            string cookieHeader = await BuildWebViewCookieHeaderAsync();
+                            if (!string.IsNullOrWhiteSpace(cookieHeader)) customHeaders["Cookie"] = cookieHeader;
+                        }
                     }
                 }
                 finally
@@ -3711,6 +4393,7 @@ public partial class Form1 : Form
 
             UpdateYtDlpJobStatus(job, downloader.LastSubtitleDownloaded ? "완료 + 자막" : "완료");
             Notify("다운로드 완료", "웹사이트 영상 다운로드가 완료되었습니다.");
+            ShowCompletedFileQuickUse(finalFilePath);
 
             string successMsg = "다운로드 완료! 아래 '폴더 열기'를 눌러 폴더를 여세요.";
             lblYtDlpStatus.Text = successMsg;
@@ -3739,6 +4422,7 @@ public partial class Form1 : Form
             else if (lowerUrlSuccess.Contains("chzzk")) platformSuccess = "치지직";
             else if (lowerUrlSuccess.Contains("soop") || lowerUrlSuccess.Contains("afreeca")) platformSuccess = "SOOP";
             else if (lowerUrlSuccess.Contains("instagram")) platformSuccess = "Instagram";
+            else if (lowerUrlSuccess.Contains("tiktok")) platformSuccess = "TikTok";
             else if (lowerUrlSuccess.Contains("pinterest")) platformSuccess = "Pinterest";
             else if (lowerUrlSuccess.Contains("anilife")) platformSuccess = "Anilife";
             else if (lowerUrlSuccess.Contains("linkkf")) platformSuccess = "Linkkf";
@@ -3762,9 +4446,8 @@ public partial class Form1 : Form
             _downloadWidgetForm?.SetProgress(null);
             _downloadWidgetForm?.SetBusy(false);
             _downloadWidgetForm?.ShowToast("\uB2E4\uC6B4\uB85C\uB4DC\uAC00 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.");
-            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            bool ytDlpExists = File.Exists(Path.Combine(baseDir, "yt-dlp.exe"));
-            bool ffmpegExists = File.Exists(Path.Combine(baseDir, "ffmpeg.exe"));
+            bool ytDlpExists = File.Exists(SettingsManager.GetYtDlpPath());
+            bool ffmpegExists = File.Exists(SettingsManager.GetFFmpegPath());
 
             string cause = GetDownloadFailureCause(ex);
             string errorMsg = BuildDownloadFailureMessage(url, ex);
@@ -3778,8 +4461,15 @@ public partial class Form1 : Form
             if (job.UseXPrivateMode || job.UseInstaPrivateMode || job.UseLoginBrowserCookies) lblXStatus.Text = "다운로드 실패: " + cause;
             pbYtDlp.Value = 0;
             if (job.UseXPrivateMode || job.UseInstaPrivateMode || job.UseLoginBrowserCookies) pbXDownload.Value = 0;
-            ShowCenteredMessage(errorMsg, "다운로드 실패", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            ReportError($"yt-dlp 다운로드 실패 ({cause}) | URL: {url}", ex);
+            bool loginErrorHandled = await HandleLoginRequiredDownloadErrorAsync(
+                url,
+                ex,
+                job.UseLoginBrowserCookies || job.UseXPrivateMode || job.UseInstaPrivateMode);
+            if (!loginErrorHandled)
+            {
+                ShowCenteredMessage(errorMsg, "다운로드 실패", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            ReportError(job.SourceFeature, "yt-dlp 영상 다운로드", $"yt-dlp 다운로드 실패 ({cause}) | URL: {url}", ex);
         }
         finally
         {
@@ -3787,6 +4477,7 @@ public partial class Form1 : Form
             {
                 try { File.Delete(cookieFile); } catch { }
             }
+            CleanupManager.UnregisterFile(cookieFile);
 
             if (_ytDlpCts == job.JobCts)
             {
@@ -3826,6 +4517,13 @@ public partial class Form1 : Form
         }
 
         return "실패: " + cause;
+    }
+
+    private string GetCurrentYtDlpErrorFeature()
+    {
+        return _isLoginBrowserMode || tglXPrivateMode.Checked || tglInstaPrivateMode.Checked
+            ? "로그인 후 다운"
+            : "웹사이트 영상 다운";
     }
 
     private async void BtnYtDlpRun_Click(object sender, EventArgs e)
@@ -3884,7 +4582,10 @@ public partial class Form1 : Form
 
 
             _lastYtDlpPct = -1; // Reset progress tracking for new download
-            await EnsureYtDlpAsync(_ytDlpCts.Token);
+            if (LooksLikeYouTubeInput(url))
+                await EnsureYouTubeExtractionToolsAsync(_ytDlpCts.Token);
+            else
+                await EnsureYtDlpAsync(_ytDlpCts.Token);
 
             lblYtDlpStatus.Text = "다운로드 준비 중...";
             pbYtDlp.Value = 0;
@@ -3910,58 +4611,99 @@ public partial class Form1 : Form
 
             downloader.WebViewResolver = async (targetUrl) =>
             {
-                string capturedUrl = "";
-                bool isAnilife = targetUrl.Contains("anilife.app", StringComparison.OrdinalIgnoreCase);
-                bool needsBrowserCapture = isAnilife ||
-                    targetUrl.Contains("chzzk.naver.com", StringComparison.OrdinalIgnoreCase) ||
-                    targetUrl.Contains("sooplive", StringComparison.OrdinalIgnoreCase);
+                await _ytDlpBrowserSemaphore.WaitAsync();
+                bool genericCaptureEnabled = false;
                 try
                 {
-                    if (webViewX.CoreWebView2 == null) await PreInitializeWebView2Async();
-                }
-                catch { }
-                this.Invoke((MethodInvoker)(() =>
-                {
-                    _capturedM3u8Url = "";
-                    if (webViewX.CoreWebView2 == null) return;
-                    webViewX.CoreWebView2.Navigate(targetUrl);
-                }));
-
-                int maxAttempts = isAnilife ? 90 : needsBrowserCapture ? 60 : 40;
-                for (int i = 0; i < maxAttempts; i++) // anilife can delay hydration before the player requests HLS.
-                {
-                    await Task.Delay(500);
-                    if (isAnilife && i == 10)
+                    string capturedUrl = "";
+                    bool isAnilife = targetUrl.Contains("anilife.app", StringComparison.OrdinalIgnoreCase);
+                    bool needsBrowserCapture = isAnilife ||
+                        targetUrl.Contains("chzzk.naver.com", StringComparison.OrdinalIgnoreCase) ||
+                        targetUrl.Contains("sooplive", StringComparison.OrdinalIgnoreCase) ||
+                        targetUrl.Contains("linkkf.drewpx.xyz", StringComparison.OrdinalIgnoreCase);
+                    genericCaptureEnabled = !needsBrowserCapture;
+                    if (genericCaptureEnabled) Interlocked.Increment(ref _genericMediaCaptureDepth);
+                    try
                     {
-                        this.Invoke((MethodInvoker)(async () =>
+                        if (webViewX.CoreWebView2 == null) await PreInitializeWebView2Async();
+                    }
+                    catch { }
+                    this.Invoke((MethodInvoker)(() =>
+                    {
+                        ClearCapturedMediaCandidates();
+                        if (webViewX.CoreWebView2 == null) return;
+                        webViewX.CoreWebView2.Navigate(targetUrl);
+                    }));
+
+                    int maxAttempts = isAnilife ? 90 : needsBrowserCapture ? 60 : 24;
+                    for (int i = 0; i < maxAttempts; i++) // anilife can delay hydration before the player requests HLS.
+                    {
+                        await Task.Delay(500);
+                        if (isAnilife && i == 10)
                         {
-                            try
+                            this.Invoke((MethodInvoker)(async () =>
                             {
-                                if (webViewX.CoreWebView2 != null)
+                                try
                                 {
-                                    await webViewX.CoreWebView2.ExecuteScriptAsync("window.dispatchEvent(new Event('mousemove')); window.dispatchEvent(new Event('scroll')); document.querySelector('video')?.load?.();");
+                                    if (webViewX.CoreWebView2 != null)
+                                    {
+                                        await webViewX.CoreWebView2.ExecuteScriptAsync("window.dispatchEvent(new Event('mousemove')); window.dispatchEvent(new Event('scroll')); document.querySelector('video')?.load?.();");
+                                    }
                                 }
+                                catch { }
+                            }));
+                        }
+                        if (!needsBrowserCapture && i == 6)
+                        {
+                            this.Invoke((MethodInvoker)(async () =>
+                            {
+                                try
+                                {
+                                    if (webViewX.CoreWebView2 != null)
+                                    {
+                                        await webViewX.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('video').forEach(v => { v.muted = true; v.play().catch(() => {}); }); window.scrollTo(0, Math.max(document.body.scrollHeight / 3, 1));");
+                                    }
+                                }
+                                catch { }
+                            }));
+                        }
+
+                        string bestCapturedUrl = GetBestCapturedMediaUrl();
+                        if (!string.IsNullOrEmpty(bestCapturedUrl) && (needsBrowserCapture || i >= 8))
+                        {
+                            capturedUrl = bestCapturedUrl;
+                            break;
+                        }
+                    }
+
+                    this.Invoke((MethodInvoker)(() =>
+                    {
+                        if (webViewX.CoreWebView2 != null)
+                        {
+                            webViewX.CoreWebView2.Stop();
+                            webViewX.CoreWebView2.Navigate("about:blank");
+                        }
+                    }));
+
+                    return capturedUrl;
+                }
+                finally
+                {
+                    if (genericCaptureEnabled) Interlocked.Decrement(ref _genericMediaCaptureDepth);
+                    try
+                    {
+                        this.Invoke((MethodInvoker)(() =>
+                        {
+                            if (webViewX.CoreWebView2 != null)
+                            {
+                                webViewX.CoreWebView2.Stop();
+                                webViewX.CoreWebView2.Navigate("about:blank");
                             }
-                            catch { }
                         }));
                     }
-                    if (!string.IsNullOrEmpty(_capturedM3u8Url) && LooksLikeCapturedMediaUrl(_capturedM3u8Url))
-                    {
-                        capturedUrl = _capturedM3u8Url;
-                        break;
-                    }
+                    catch { }
+                    _ytDlpBrowserSemaphore.Release();
                 }
-
-                this.Invoke((MethodInvoker)(() =>
-                {
-                    if (webViewX.CoreWebView2 != null)
-                    {
-                        webViewX.CoreWebView2.Stop();
-                        webViewX.CoreWebView2.Navigate("about:blank");
-                    }
-                }));
-
-                return capturedUrl;
             };
 
 
@@ -3973,7 +4715,7 @@ public partial class Form1 : Form
 
             string browser = "none";
             string cookieFile = "";
-            Dictionary<string, string> customHeaders = null;
+            Dictionary<string, string>? customHeaders = null;
             
             string lowerUrlSuccess = url.ToLower();
             bool isTargetPlatform = ShouldUseLoginBrowserCookiesForUrl(lowerUrlSuccess);
@@ -3982,6 +4724,8 @@ public partial class Form1 : Form
             {
                 try
                 {
+
+                    customHeaders = new Dictionary<string, string>();
 
                     bool useXCookieProfile = tglXPrivateMode.Checked ||
                         lowerUrlSuccess.Contains("x.com") ||
@@ -4003,16 +4747,23 @@ public partial class Form1 : Form
                         if (!string.IsNullOrEmpty(_capturedAuthToken)) customHeaders["authorization"] = _capturedAuthToken;
                         if (!string.IsNullOrEmpty(_capturedCsrfToken)) customHeaders["x-csrf-token"] = _capturedCsrfToken;
                         if (!string.IsNullOrEmpty(_capturedUserAgent)) customHeaders["User-Agent"] = _capturedUserAgent;
-                        string cookieHeader = await BuildWebViewCookieHeaderAsync();
-                        if (!string.IsNullOrWhiteSpace(cookieHeader)) customHeaders["Cookie"] = cookieHeader;
+                        if (string.IsNullOrEmpty(cookieFile))
+                        {
+                            string cookieHeader = await BuildWebViewCookieHeaderAsync();
+                            if (!string.IsNullOrWhiteSpace(cookieHeader)) customHeaders["Cookie"] = cookieHeader;
+                        }
                     }
                 }
                 catch (Exception ex)
                 {
                     if (tglXPrivateMode.Checked || tglInstaPrivateMode.Checked)
                     {
-                        ShowCenteredMessage($"로그인 정보를 가져오지 못했습니다: {ex.Message}", "알림", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        ReportError($"yt-dlp 로그인 정보 가져오기 실패 | URL: {url}", ex);
+                        ShowCenteredMessage(
+                            UserErrorFormatter.Format("로그인 정보를 가져오지 못했습니다.", ex),
+                            "로그인 정보 오류",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                        ReportError("로그인 후 다운", "로그인 쿠키 준비", $"yt-dlp 로그인 정보 가져오기 실패 | URL: {url}", ex);
                         return;
                     }
                 }
@@ -4023,6 +4774,7 @@ public partial class Form1 : Form
 
             Notify("다운로드 완료", "영상 다운로드가 완료되었습니다.");
             ShowCenteredMessage($"다운로드 완료!\n저장 위치: {finalFilePath}", "성공", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ShowCompletedFileQuickUse(finalFilePath);
             
             txtYtDlpUrl.Text = "";
             string successMsg = "다운로드 완료! 아래 '폴더 열기'를 눌러 폴더를 여세요.";
@@ -4049,6 +4801,7 @@ public partial class Form1 : Form
             else if (lowerUrlSuccess.Contains("chzzk")) platformSuccess = "치지직";
             else if (lowerUrlSuccess.Contains("soop") || lowerUrlSuccess.Contains("afreeca")) platformSuccess = "SOOP";
             else if (lowerUrlSuccess.Contains("instagram")) platformSuccess = "Instagram";
+            else if (lowerUrlSuccess.Contains("tiktok")) platformSuccess = "TikTok";
             else if (lowerUrlSuccess.Contains("pinterest")) platformSuccess = "Pinterest";
             else if (lowerUrlSuccess.Contains("anilife")) platformSuccess = "Anilife";
             else if (lowerUrlSuccess.Contains("linkkf")) platformSuccess = "Linkkf";
@@ -4064,9 +4817,8 @@ public partial class Form1 : Form
         }
         catch (Exception ex)
         {
-            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            bool ytDlpExists = File.Exists(Path.Combine(baseDir, "yt-dlp.exe"));
-            bool ffmpegExists = File.Exists(Path.Combine(baseDir, "ffmpeg.exe"));
+            bool ytDlpExists = File.Exists(SettingsManager.GetYtDlpPath());
+            bool ffmpegExists = File.Exists(SettingsManager.GetFFmpegPath());
 
             string cause = GetDownloadFailureCause(ex);
             string errorMsg = BuildDownloadFailureMessage(url, ex);
@@ -4079,8 +4831,15 @@ public partial class Form1 : Form
             if (tglXPrivateMode.Checked || tglInstaPrivateMode.Checked || _isLoginBrowserMode) lblXStatus.Text = "다운로드 실패: " + cause;
             pbYtDlp.Value = 0;
             if (tglXPrivateMode.Checked || tglInstaPrivateMode.Checked || _isLoginBrowserMode) pbXDownload.Value = 0;
-            ShowCenteredMessage(errorMsg, "다운로드 실패", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            ReportError($"yt-dlp 다운로드 실패 ({cause}) | URL: {url}", ex);
+            bool loginErrorHandled = await HandleLoginRequiredDownloadErrorAsync(
+                url,
+                ex,
+                tglXPrivateMode.Checked || tglInstaPrivateMode.Checked || _isLoginBrowserMode);
+            if (!loginErrorHandled)
+            {
+                ShowCenteredMessage(errorMsg, "다운로드 실패", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            ReportError(GetCurrentYtDlpErrorFeature(), "즉시 영상 다운로드", $"yt-dlp 다운로드 실패 ({cause}) | URL: {url}", ex);
         }
         finally
         {
@@ -4090,6 +4849,7 @@ public partial class Form1 : Form
             {
                 try { File.Delete(cookiePath); } catch {}
             }
+            CleanupManager.UnregisterFile(cookiePath);
 
             btnYtDlpRun.Enabled = true;
             btnYtDlpCancel.Visible = false;
@@ -4365,6 +5125,8 @@ public partial class Form1 : Form
 
                 IStreamInfo[] targetStreams;
                 var audioStream = job.Manifest.GetAudioOnlyStreams().GetWithHighestBitrate();
+                if (audioStream == null)
+                    throw new InvalidOperationException("YouTube manifest contains no audio stream.");
 
                 if (!job.Option.IsVideo)
                 {
@@ -4374,10 +5136,14 @@ public partial class Form1 : Form
                 {
                     var videoStream = job.Manifest.GetVideoOnlyStreams().FirstOrDefault(s => s.VideoQuality.Label == job.Option.Id) 
                                       ?? job.Manifest.GetVideoOnlyStreams().GetWithHighestVideoQuality();
+                    if (videoStream == null)
+                        throw new InvalidOperationException("YouTube manifest contains no video stream.");
                     targetStreams = new IStreamInfo[] { audioStream, videoStream };
                 }
 
-                var builder = new ConversionRequestBuilder(job.OutputPath).SetPreset(ConversionPreset.UltraFast);
+                var builder = new ConversionRequestBuilder(job.OutputPath)
+                    .SetFFmpegPath(SettingsManager.GetFFmpegPath())
+                    .SetPreset(ConversionPreset.UltraFast);
                 
                 if (!job.Option.IsVideo) 
                 {
@@ -4418,6 +5184,7 @@ public partial class Form1 : Form
                 }
                 
                 Notify("다운로드 성공", $"{jobTitle} 다운로드가 완료되었습니다.");
+                ShowCompletedFileQuickUse(job.OutputPath);
                 
 
                 LogDownload(BuildDownloadHistoryEntry("YouTube", job.CustomFileName, job.OutputPath));
@@ -4483,7 +5250,7 @@ public partial class Form1 : Form
                 Notify("다운로드 실패", $"{failedTitle} 다운로드 실패: {cause}");
                 ShowCenteredMessage(failureMessage, "다운로드 실패", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
-                ReportError($"유튜브 다운로드 실패 ({cause}) | URL: {failedUrl}", ex);
+                ReportError(job.SourceFeature, "영상 다운로드", $"유튜브 다운로드 실패 ({cause}) | URL: {failedUrl}", ex);
             }            finally
             {
                 _activeJobs.Remove(job);
@@ -4504,12 +5271,12 @@ public partial class Form1 : Form
             lblVideoTitle.Text = "유튜브 보안 업데이트 우회 중... (잠시만 기다려주세요)";
             
             string ytDlpPath = SettingsManager.GetYtDlpPath();
-            await EnsureYtDlpAsync(forceUpdate: true);
+            await EnsureYouTubeExtractionToolsAsync();
 
             ProcessStartInfo psi = new ProcessStartInfo
             {
                 FileName = ytDlpPath,
-                Arguments = $"--ignore-config --encoding utf-8 --no-playlist --playlist-items 1 --extractor-args \"youtube:player_client=web,web_safari,android,ios\" --print \"%(title)s|%(thumbnail)s\" --no-warnings \"{url}\"",
+                Arguments = $"--ignore-config --encoding utf-8 --no-playlist --playlist-items 1 {GetYtDlpJavaScriptRuntimeArguments()}--print \"%(title)s|%(thumbnail)s\" \"{url}\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
@@ -4589,8 +5356,13 @@ public partial class Form1 : Form
         catch (Exception ex)
         {
             cmbQuality.Enabled = false;
-            ShowCenteredMessage($"오류: {ex.Message}", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ShowCenteredMessage(
+                UserErrorFormatter.Format("우회 방식으로도 유튜브 영상 정보를 불러오지 못했습니다.", ex),
+                "영상 정보 오류",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
             lblVideoTitle.Text = "오류가 발생했습니다.";
+            ReportError(_pendingYoutubeSourceFeature, "yt-dlp 영상 정보 우회 조회", $"YouTube 정보 우회 조회 실패 | URL: {url}", ex);
         }
     }
 
@@ -4620,7 +5392,7 @@ public partial class Form1 : Form
             });
         }
 
-        await EnsureYtDlpAsync(forceUpdate: true);
+        await EnsureYouTubeExtractionToolsAsync(job.JobCts.Token);
         if (!this.IsDisposed && !this.Disposing && lvQueue.Items.Contains(job.ListViewItem))
         {
             this.Invoke((MethodInvoker)delegate {
@@ -4644,7 +5416,7 @@ public partial class Form1 : Form
             outputTemplate = Path.Combine(directory, $"{siteTemplate}.%(ext)s");
         }
 
-        string arguments = $"--ignore-config --newline --encoding utf-8 --no-warnings --no-playlist --playlist-items 1 --extractor-args \"youtube:player_client=web,web_safari,android,ios\" --ffmpeg-location \"{ffmpegDir}\" ";
+        string arguments = $"--ignore-config --newline --encoding utf-8 --no-playlist --playlist-items 1 --print \"after_move:MMT_FILE:%(filepath)s\" {GetYtDlpJavaScriptRuntimeArguments()}--ffmpeg-location \"{ffmpegDir}\" ";
 
         if (isAudioOnly)
         {
@@ -4676,6 +5448,7 @@ public partial class Form1 : Form
 
         using var process = new Process { StartInfo = psi };
         var processLog = new StringBuilder();
+        string downloadedFilePath = "";
         
         System.Text.RegularExpressions.Regex progressRegex = new System.Text.RegularExpressions.Regex(@"\[download\]\s+(?<percent>\d+(\.\d+)?)%");
         
@@ -4683,6 +5456,10 @@ public partial class Form1 : Form
         {
             if (string.IsNullOrEmpty(e.Data)) return;
             processLog.AppendLine(e.Data);
+            if (e.Data.StartsWith("MMT_FILE:", StringComparison.Ordinal))
+            {
+                downloadedFilePath = e.Data["MMT_FILE:".Length..].Trim().Trim('"');
+            }
             var m = progressRegex.Match(e.Data);
             if (m.Success && double.TryParse(m.Groups["percent"].Value, out double p))
             {
@@ -4729,14 +5506,16 @@ public partial class Form1 : Form
             });
         }
         
+        string completedFilePath = File.Exists(downloadedFilePath) ? downloadedFilePath : job.OutputPath;
         Notify("다운로드 성공", $"{job.CustomFileName} 다운로드가 완료되었습니다.");
+        ShowCompletedFileQuickUse(completedFilePath);
         LogUsage("YouTube");
 
-        LogDownload(BuildDownloadHistoryEntry("YouTube", job.CustomFileName, job.OutputPath));
+        LogDownload(BuildDownloadHistoryEntry("YouTube", job.CustomFileName, completedFilePath));
 
         if (SettingsManager.Settings.AutoOpenFolder)
         {
-            string folder = Path.GetDirectoryName(job.OutputPath);
+            string folder = Path.GetDirectoryName(completedFilePath);
             OpenFolder(folder);
         }
     }
@@ -4968,8 +5747,12 @@ public partial class Form1 : Form
                 pbWebM.Value = 0;
             });
             Notify("변환 실패", "변환 중 오류가 발생했습니다.");
-            ShowCenteredMessage($"변환 중 오류가 발생했습니다.\n{ex.Message}", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            ReportError($"WebM 변환 실패 | Input: {inputFile}, Format: {format}", ex);
+            ShowCenteredMessage(
+                UserErrorFormatter.Format("포맷 변환 중 오류가 발생했습니다.", ex),
+                "포맷 변환 오류",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            ReportError("포맷 변환기", $"{format} 변환", $"포맷 변환 실패 | Input: {inputFile}, Format: {format}", ex);
         }
         finally
         {
@@ -5088,8 +5871,12 @@ public partial class Form1 : Form
                 pbCodec.Value = 0;
             });
             Notify("변환 실패", "코덱 변환 중 오류가 발생했습니다.");
-            ShowCenteredMessage($"변환 중 오류가 발생했습니다.\n{ex.Message}", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            ReportError($"코덱 변환 실패 | Input: {inputFile}", ex);
+            ShowCenteredMessage(
+                UserErrorFormatter.Format("Pr/AE 호환 코덱 변환 중 오류가 발생했습니다.", ex),
+                "코덱 변환 오류",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            ReportError("Pr/AE 코덱 해결", "호환 MP4 변환", $"코덱 변환 실패 | Input: {inputFile}", ex);
         }
         finally
         {
@@ -5221,8 +6008,12 @@ public partial class Form1 : Form
                 pbAudio.Value = 0;
             });
             Notify("변환 실패", "변환 중 오류가 발생했습니다.");
-            ShowCenteredMessage($"변환 중 오류가 발생했습니다.\n{ex.Message}", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            ReportError($"오디오 변환 실패 | Input: {inputFile}, Format: {format}", ex);
+            ShowCenteredMessage(
+                UserErrorFormatter.Format("오디오 변환 중 오류가 발생했습니다.", ex),
+                "오디오 변환 오류",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            ReportError("오디오 변환기", $"{format} 변환", $"오디오 변환 실패 | Input: {inputFile}, Format: {format}", ex);
         }
         finally
         {
@@ -5273,6 +6064,10 @@ public partial class Form1 : Form
         {
             SettingsManager.Settings.EnableWidgetMode = chkEnableWidgetMode.Checked;
         }
+        if (chkEnableCompletedFileQuickUse != null)
+        {
+            SettingsManager.Settings.EnableCompletedFileQuickUse = chkEnableCompletedFileQuickUse.Checked;
+        }
         SaveSelectedSiteFolderOverride();
         if (chkUseSiteFolderRules != null)
         {
@@ -5314,18 +6109,63 @@ public partial class Form1 : Form
         chkAutoUpdateCheck.Checked = SettingsManager.Settings.AutoUpdateCheck;
         ReloadDownloadRuleSettingsUI();
         ReloadWidgetModeSettingsUI();
+        ReloadExperimentalFeaturesUI();
     }
 
 
     private async void BtnCheckUpdate_Click(object sender, EventArgs e)
     {
-        await CheckForUpdateAsync(true);
+        if (!btnCheckUpdate.Enabled) return;
+
+        btnCheckUpdate.Enabled = false;
+        try
+        {
+            await CheckForUpdateAsync(true);
+        }
+        finally
+        {
+            if (!IsDisposed && !btnCheckUpdate.IsDisposed)
+                btnCheckUpdate.Enabled = true;
+        }
+    }
+
+    private void ConfigureUpdatedAppForeground()
+    {
+        if (!Program.StartedAfterUpdate) return;
+
+        TopMost = true;
+        Shown += (s, e) =>
+        {
+            ShowInTaskbar = true;
+            WindowState = FormWindowState.Normal;
+            BringToFront();
+            Activate();
+            SetForegroundWindow(Handle);
+
+            var releaseTopMostTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+            releaseTopMostTimer.Tick += (timerSender, timerEvent) =>
+            {
+                releaseTopMostTimer.Stop();
+                releaseTopMostTimer.Dispose();
+                if (!IsDisposed) TopMost = false;
+            };
+            releaseTopMostTimer.Start();
+        };
     }
 
     private async Task CheckForUpdateAsync(bool manual)
     {
+        UpdateProgressForm? updateProgress = null;
+
         try
         {
+            if (manual)
+            {
+                updateProgress = new UpdateProgressForm();
+                updateProgress.ShowCentered(this, "새 버전을 확인하고 있습니다...");
+                await Task.Yield();
+            }
+
             if (!_httpClient.DefaultRequestHeaders.Contains("User-Agent"))
                 _httpClient.DefaultRequestHeaders.Add("User-Agent", "MMT-Updater");
 
@@ -5341,19 +6181,54 @@ public partial class Form1 : Form
             {
                 if (latest.CompareTo(current) > 0)
                 {
-                    var result = ShowCenteredMessage($"새로운 업데이트(v{latestVersion})가 있습니다.\n지금 다운로드하여 설치하시겠습니까?\n\n설치 중 프로그램이 자동으로 종료 후 다시 시작될 수 있습니다.", 
-                        "업데이트 알림", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                    if (!manual && string.Equals(
+                            SettingsManager.Settings.SkippedUpdateVersion?.Trim(),
+                            latestVersion,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+
+                    updateProgress?.Close();
+                    updateProgress?.Dispose();
+                    updateProgress = null;
+
+                    var updatePrompt = ShowUpdateAvailableDialog(latestVersion);
+                    var result = updatePrompt.Result;
+
+                    if (result != DialogResult.Yes && updatePrompt.SkipThisVersion)
+                    {
+                        SettingsManager.Settings.SkippedUpdateVersion = latestVersion;
+                        SettingsManager.Save();
+                    }
 
                     if (result == DialogResult.Yes)
                     {
+                        updateProgress = new UpdateProgressForm();
+                        updateProgress.ShowCentered(this, "업데이트 파일을 준비하고 있습니다...");
+                        await Task.Yield();
+
+                        if (string.Equals(
+                                SettingsManager.Settings.SkippedUpdateVersion?.Trim(),
+                                latestVersion,
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            SettingsManager.Settings.SkippedUpdateVersion = "";
+                            SettingsManager.Save();
+                        }
+
                         var assets = root.GetProperty("assets");
+                        string expectedInstallerName = $"MMT_Setup_v{latestVersion}.exe";
                         string downloadUrl = "";
+                        string expectedDigest = "";
                         foreach (var asset in assets.EnumerateArray())
                         {
                             string fileName = asset.GetProperty("name").GetString() ?? "";
-                            if (fileName.EndsWith(".exe"))
+                            if (fileName.Equals(expectedInstallerName, StringComparison.OrdinalIgnoreCase))
                             {
                                 downloadUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
+                                if (asset.TryGetProperty("digest", out JsonElement digestElement))
+                                    expectedDigest = digestElement.GetString() ?? "";
                                 break;
                             }
                         }
@@ -5367,56 +6242,113 @@ public partial class Form1 : Form
                                 using (var downloadResponse = await _httpClient.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead))
                                 {
                                     downloadResponse.EnsureSuccessStatusCode();
-                                    var totalBytes = downloadResponse.Content.Headers.ContentLength ?? -1L;
-                                    
+                                    long? totalBytes = downloadResponse.Content.Headers.ContentLength;
+                                    long downloadedBytes = 0;
+
                                     using (var contentStream = await downloadResponse.Content.ReadAsStreamAsync())
                                     using (var fileStream = new FileStream(tempFile, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true))
                                     {
                                         var buffer = new byte[8192];
-                                        var totalRead = 0L;
                                         int read;
                                         while ((read = await contentStream.ReadAsync(buffer, 0, buffer.Length)) > 0)
                                         {
                                             await fileStream.WriteAsync(buffer.AsMemory(0, read));
-                                            totalRead += read;
-                                            
-
+                                            downloadedBytes += read;
+                                            updateProgress.SetDownloadProgress(downloadedBytes, totalBytes);
                                         }
                                     }
                                 }
 
+                                updateProgress.SetIndeterminate("다운로드한 업데이트 파일을 확인하고 있습니다...");
+                                if (!IsValidWindowsExecutable(tempFile))
+                                {
+                                    try { File.Delete(tempFile); } catch { }
+                                    throw new InvalidDataException("다운로드한 업데이트 설치 파일이 올바른 Windows EXE가 아닙니다.");
+                                }
 
+                                if (!string.IsNullOrWhiteSpace(expectedDigest))
+                                {
+                                    updateProgress.SetIndeterminate("업데이트 파일의 안전성을 검증하고 있습니다...");
+                                    await using var installerStream = new FileStream(tempFile, FileMode.Open, FileAccess.Read, FileShare.Read);
+                                    byte[] actualHash = await SHA256.HashDataAsync(installerStream);
+                                    string actualDigest = "sha256:" + Convert.ToHexString(actualHash).ToLowerInvariant();
+                                    if (!actualDigest.Equals(expectedDigest.Trim(), StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        try { File.Delete(tempFile); } catch { }
+                                        throw new InvalidDataException("업데이트 설치 파일의 SHA-256 검증에 실패했습니다. 설치를 중단합니다.");
+                                    }
+                                }
+
+                                updateProgress.SetIndeterminate("설치 프로그램을 실행하고 있습니다...");
                                 await Task.Delay(500);
 
                                 var startInfo = new ProcessStartInfo(tempFile)
                                 {
-
-
-
+                                    Arguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /LANG=korean /MERGETASKS=\"!desktopicon\"",
                                     UseShellExecute = true
                                 };
                                 
                                 Process.Start(startInfo);
                                 
 
+                                await Task.Delay(500);
                                 Application.Exit();
                             }
                             catch (Exception ex)
                             {
-                                ShowCenteredMessage($"업데이트 다운로드 중 오류가 발생했습니다: {ex.Message}", "업데이트 실패");
+                                updateProgress?.Close();
+                                updateProgress?.Dispose();
+                                updateProgress = null;
+                                ShowCenteredMessage(
+                                    UserErrorFormatter.Format("업데이트 파일을 다운로드하거나 실행하지 못했습니다.", ex),
+                                    "업데이트 실패",
+                                    MessageBoxButtons.OK,
+                                    MessageBoxIcon.Error);
                             }
+                        }
+                        else
+                        {
+                            updateProgress?.Close();
+                            updateProgress?.Dispose();
+                            updateProgress = null;
+                            ShowCenteredMessage(
+                                $"업데이트 설치 파일을 찾지 못했습니다.\n\n필요한 파일명: {expectedInstallerName}\n잠시 후 다시 확인하거나 [다른 버전 받기]를 이용해 주세요.",
+                                "업데이트 파일 없음",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Warning);
                         }
                     }
                 }
                 else if (manual)
                 {
+                    updateProgress?.Close();
+                    updateProgress?.Dispose();
+                    updateProgress = null;
                     ShowCenteredMessage("현재 최신 버전을 사용 중입니다.", "업데이트 확인");
                 }
             }
         }
         catch (Exception ex)
         {
-            if (manual) ShowCenteredMessage($"업데이트 확인 중 오류가 발생했습니다: {ex.Message}", "오류");
+            if (manual)
+            {
+                updateProgress?.Close();
+                updateProgress?.Dispose();
+                updateProgress = null;
+                ShowCenteredMessage(
+                    UserErrorFormatter.Format("새 버전을 확인하지 못했습니다.", ex),
+                    "업데이트 확인 오류",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+        }
+        finally
+        {
+            if (updateProgress != null)
+            {
+                updateProgress.Close();
+                updateProgress.Dispose();
+            }
         }
     }
 
@@ -5664,45 +6596,55 @@ public partial class Form1 : Form
         UpdateVideoInfoDisplay();
     }
 
-    private async Task EnsureFFmpegAsync()
+    private async Task EnsureFFmpegAsync(CancellationToken ct = default)
     {
-        string ffmpegPath = SettingsManager.GetFFmpegPath();
-        string ffprobePath = SettingsManager.GetFFprobePath();
-
-
-        if (File.Exists(ffmpegPath) && !IsGitLfsPointer(ffmpegPath) && HasMzHeader(ffmpegPath) &&
-            File.Exists(ffprobePath) && !IsGitLfsPointer(ffprobePath) && HasMzHeader(ffprobePath))
-        {
-            Xabe.FFmpeg.FFmpeg.SetExecutablesPath(Path.GetDirectoryName(ffmpegPath));
-            return;
-        }
-
-
-        if (File.Exists(ffmpegPath) && (IsGitLfsPointer(ffmpegPath) || !HasMzHeader(ffmpegPath))) try { File.Delete(ffmpegPath); } catch { }
-        if (File.Exists(ffprobePath) && (IsGitLfsPointer(ffprobePath) || !HasMzHeader(ffprobePath))) try { File.Delete(ffprobePath); } catch { }
-
-
-        if (File.Exists(ffmpegPath) && File.Exists(ffprobePath))
-        {
-            Xabe.FFmpeg.FFmpeg.SetExecutablesPath(Path.GetDirectoryName(ffmpegPath));
-            return;
-        }
-
-
-        string toolsDir = Path.GetDirectoryName(ffmpegPath) ?? SettingsManager.UserDataFolder;
-        if (!Directory.Exists(toolsDir)) Directory.CreateDirectory(toolsDir);
-        
+        await _ffmpegInstallSemaphore.WaitAsync(ct);
         try
         {
+            string ffmpegPath = SettingsManager.GetFFmpegPath();
+            string ffprobePath = SettingsManager.GetFFprobePath();
+
+            if (IsValidWindowsExecutable(ffmpegPath) && IsValidWindowsExecutable(ffprobePath))
+            {
+                Xabe.FFmpeg.FFmpeg.SetExecutablesPath(Path.GetDirectoryName(ffmpegPath));
+                return;
+            }
+
+            if (File.Exists(ffmpegPath) && !IsValidWindowsExecutable(ffmpegPath)) try { File.Delete(ffmpegPath); } catch { }
+            if (File.Exists(ffprobePath) && !IsValidWindowsExecutable(ffprobePath)) try { File.Delete(ffprobePath); } catch { }
+
+            string toolsDir = Path.GetDirectoryName(ffmpegPath) ?? SettingsManager.UserDataFolder;
+            Directory.CreateDirectory(toolsDir);
             await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official, toolsDir);
+
+            ffmpegPath = SettingsManager.GetFFmpegPath();
+            ffprobePath = SettingsManager.GetFFprobePath();
+            if (!IsValidWindowsExecutable(ffmpegPath) || !IsValidWindowsExecutable(ffprobePath))
+            {
+                throw new InvalidDataException("다운로드 후 ffmpeg.exe 또는 ffprobe.exe를 확인할 수 없습니다.");
+            }
+
+            Xabe.FFmpeg.FFmpeg.SetExecutablesPath(Path.GetDirectoryName(ffmpegPath));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            // Fallback for download failure
-            ShowCenteredMessage($"FFmpeg 다운로드 중 오류가 발생했습니다: {ex.Message}\n프로그램을 관리자 권한으로 실행하거나 AppData 폴더 쓰기 권한을 확인해 주세요.", "알림", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            throw new InvalidOperationException(
+                "FFmpeg 필수 도구를 준비하지 못했습니다. 네트워크 연결을 확인한 뒤 다시 시도해 주세요.",
+                ex);
         }
-        
-        Xabe.FFmpeg.FFmpeg.SetExecutablesPath(toolsDir);
+        finally
+        {
+            _ffmpegInstallSemaphore.Release();
+        }
+    }
+
+    private static bool IsValidWindowsExecutable(string path)
+    {
+        return File.Exists(path) && !IsGitLfsPointer(path) && HasMzHeader(path);
     }
 
     private void UpdateVideoInfoDisplay()
@@ -5728,16 +6670,19 @@ public partial class Form1 : Form
             {
                 if (!SettingsManager.Settings.KeepLoginSession)
                 {
-                    CleanupManager.CleanupWebViewData();
+                    await Task.Run(() => CleanupManager.CleanupWebViewData());
                 }
                 else
                 {
-                    CleanupManager.CleanupWebViewNonLoginData();
+                    await Task.Run(() => CleanupManager.CleanupWebViewNonLoginData());
                 }
             }
             else if (!SettingsManager.Settings.KeepLoginSession)
             {
-                try { if (Directory.Exists(userDataPath)) Directory.Delete(userDataPath, true); } catch { }
+                await Task.Run(() =>
+                {
+                    try { if (Directory.Exists(userDataPath)) Directory.Delete(userDataPath, true); } catch { }
+                });
             }
             if (!Directory.Exists(userDataPath)) Directory.CreateDirectory(userDataPath);
 
@@ -5781,7 +6726,7 @@ public partial class Form1 : Form
 ");
 
                 webViewX.CoreWebView2.NavigationStarting += (s, e) => {
-                    _capturedM3u8Url = "";
+                    ClearCapturedMediaCandidates();
                     if (TryBuildGoogleAccountChooserUrl(e.Uri, out string accountChooserUrl))
                     {
                         e.Cancel = true;
@@ -5803,16 +6748,39 @@ public partial class Form1 : Form
                         if (root.TryGetProperty("request", out var request))
                         {
                             string url = request.GetProperty("url").GetString() ?? "";
-                            if (LooksLikeCapturedMediaUrl(url))
+                            string resourceType = root.TryGetProperty("type", out var typeValue) ? typeValue.GetString() ?? "" : "";
+                            bool genericCaptureActive = Volatile.Read(ref _genericMediaCaptureDepth) > 0;
+                            if (LooksLikeCapturedMediaUrl(url, genericCaptureActive ? resourceType : ""))
                             {
-                                _capturedM3u8Url = NormalizeCapturedMediaUrl(url);
-                                Debug.WriteLine($"[MMT-Intercept] Video Found: {_capturedM3u8Url}");
+                                RememberCapturedMediaUrl(url);
+                                Debug.WriteLine($"[MMT-Intercept] Video request found: {GetBestCapturedMediaUrl()}");
                             }
                             if (request.TryGetProperty("headers", out var headers))
                             {
                                 if (headers.TryGetProperty("authorization", out var auth)) _capturedAuthToken = auth.GetString() ?? _capturedAuthToken;
                                 if (headers.TryGetProperty("x-csrf-token", out var csrf)) _capturedCsrfToken = csrf.GetString() ?? _capturedCsrfToken;
                             }
+                        }
+                    }
+                    catch { }
+                };
+
+                webViewX.CoreWebView2.GetDevToolsProtocolEventReceiver("Network.responseReceived").DevToolsProtocolEventReceived += (sender, args) =>
+                {
+                    try
+                    {
+                        if (Volatile.Read(ref _genericMediaCaptureDepth) <= 0) return;
+                        using var doc = JsonDocument.Parse(args.ParameterObjectAsJson);
+                        var root = doc.RootElement;
+                        if (!root.TryGetProperty("response", out var response)) return;
+
+                        string url = response.TryGetProperty("url", out var urlValue) ? urlValue.GetString() ?? "" : "";
+                        string mimeType = response.TryGetProperty("mimeType", out var mimeValue) ? mimeValue.GetString() ?? "" : "";
+                        string resourceType = root.TryGetProperty("type", out var typeValue) ? typeValue.GetString() ?? "" : "";
+                        if (LooksLikeCapturedMediaUrl(url, resourceType, mimeType))
+                        {
+                            RememberCapturedMediaUrl(url);
+                            Debug.WriteLine($"[MMT-Intercept] Video response found: {GetBestCapturedMediaUrl()} ({mimeType})");
                         }
                     }
                     catch { }
@@ -6030,17 +6998,112 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         }
     }
 
-    private static bool LooksLikeCapturedMediaUrl(string url)
+    private void ClearCapturedMediaCandidates()
+    {
+        lock (_capturedMediaLock)
+        {
+            _capturedMediaUrls.Clear();
+            _capturedM3u8Url = "";
+        }
+    }
+
+    private void RememberCapturedMediaUrl(string url)
+    {
+        string normalized = NormalizeCapturedMediaUrl(url);
+        lock (_capturedMediaLock)
+        {
+            if (!_capturedMediaUrls.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+                _capturedMediaUrls.Add(normalized);
+
+            _capturedM3u8Url = _capturedMediaUrls
+                .Select((candidate, index) => new { candidate, index, score = ScoreCapturedMediaUrl(candidate) })
+                .OrderByDescending(item => item.score)
+                .ThenBy(item => item.index)
+                .Select(item => item.candidate)
+                .FirstOrDefault() ?? normalized;
+        }
+    }
+
+    private string GetBestCapturedMediaUrl()
+    {
+        lock (_capturedMediaLock)
+        {
+            return _capturedM3u8Url;
+        }
+    }
+
+    private static int ScoreCapturedMediaUrl(string url)
+    {
+        string lower = url.ToLowerInvariant();
+        if (IsLikelyAdvertisingMediaUrl(lower)) return int.MinValue;
+
+        int score = 0;
+        if (lower.Contains(".m3u8")) score += 500;
+        else if (lower.Contains(".mpd")) score += 450;
+        else if (lower.Contains(".mp4")) score += 350;
+        else score += 250;
+
+        if (lower.Contains("master") || lower.Contains("playlist")) score += 80;
+        if (lower.Contains("1080")) score += 30;
+        else if (lower.Contains("720")) score += 20;
+        if (lower.Contains("preview") || lower.Contains("thumbnail") || lower.Contains("sprite")) score -= 200;
+        return score;
+    }
+
+    private static bool LooksLikeCapturedMediaUrl(string url, string resourceType = "", string mimeType = "")
     {
         if (string.IsNullOrWhiteSpace(url)) return false;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
+        if (uri.IsLoopback || IsPrivateNetworkHost(uri.Host)) return false;
+
         string lower = url.ToLowerInvariant();
+        if (IsLikelyAdvertisingMediaUrl(lower)) return false;
+
+        string lowerType = resourceType.ToLowerInvariant();
+        string lowerMime = mimeType.ToLowerInvariant();
+        bool mediaResponse = lowerType == "media" || lowerMime.StartsWith("video/");
+        bool manifestResponse = lowerMime.Contains("mpegurl") ||
+                                lowerMime.Contains("dash+xml") ||
+                                lowerMime.Contains("application/mp4");
 
         return lower.Contains(".m3u8") ||
-               lower.Contains(".mp4") && (lower.Contains("video.twimg.com") || lower.Contains("scontent") || lower.Contains("fbcdn") || lower.Contains("cdninstagram.com")) ||
+               lower.Contains(".mpd") ||
+               lower.Contains(".mp4") && (mediaResponse || lower.Contains("video.twimg.com") || lower.Contains("scontent") || lower.Contains("fbcdn") || lower.Contains("cdninstagram.com")) ||
+               mediaResponse ||
+               manifestResponse ||
                lower.Contains("gcdn.app") ||
                lower.Contains("anilife.app") ||
                lower.Contains("sooplive") && (lower.Contains("manifest") || lower.Contains(".m3u8")) ||
                lower.Contains("pstatic.net") && (lower.Contains(".m3u8") || lower.Contains(".ts"));
+    }
+
+    private static bool IsLikelyAdvertisingMediaUrl(string lowerUrl)
+    {
+        return lowerUrl.Contains("doubleclick.net") ||
+               lowerUrl.Contains("googlesyndication.com") ||
+               lowerUrl.Contains("googleadservices.com") ||
+               lowerUrl.Contains("/preroll/") ||
+               lowerUrl.Contains("/pre-roll/") ||
+               lowerUrl.Contains("/advert/") ||
+               lowerUrl.Contains("/advertisement/") ||
+               lowerUrl.Contains("vast.xml");
+    }
+
+    private static bool IsPrivateNetworkHost(string host)
+    {
+        if (!System.Net.IPAddress.TryParse(host, out var address)) return false;
+        byte[] bytes = address.GetAddressBytes();
+        if (address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            return bytes[0] == 10 ||
+                   bytes[0] == 127 ||
+                   bytes[0] == 169 && bytes[1] == 254 ||
+                   bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31 ||
+                   bytes[0] == 192 && bytes[1] == 168;
+        }
+
+        return address.IsIPv6LinkLocal || address.IsIPv6SiteLocal;
     }
 
     private static string NormalizeCapturedMediaUrl(string url)
@@ -7140,6 +8203,7 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
 
         string cookiePath = Path.Combine(SettingsManager.UserDataFolder, "temp_x_cookies.txt");
         int count = 0;
+        CleanupManager.RegisterFile(cookiePath);
         using (var sw = new StreamWriter(cookiePath, false, new System.Text.UTF8Encoding(false)))
         {
             sw.WriteLine("# Netscape HTTP Cookie File");
@@ -7169,7 +8233,11 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             }
         }
         
-        return count > 0 ? cookiePath : "";
+        if (count > 0) return cookiePath;
+
+        try { File.Delete(cookiePath); } catch { }
+        CleanupManager.UnregisterFile(cookiePath);
+        return "";
     }
 
     private static bool IsSupportedLoginCookieDomain(string domain)
@@ -7241,6 +8309,7 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         public string CustomFileName { get; set; } = "";
         public bool DownloadSubtitles { get; set; }
         public string SubtitleLanguagePreset { get; set; } = "Ko";
+        public string SourceFeature { get; set; } = "유튜브 다운로더";
     }
 
     private class YtDlpDownloadJob
@@ -7257,6 +8326,7 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         public bool UseXPrivateMode { get; set; }
         public bool UseInstaPrivateMode { get; set; }
         public bool UseLoginBrowserCookies { get; set; }
+        public string SourceFeature { get; set; } = "웹사이트 영상 다운";
         public ListViewItem ListViewItem { get; set; } = null!;
         public CancellationTokenSource JobCts { get; set; } = null!;
     }
@@ -7630,6 +8700,10 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
     private static string BuildErrorReportContent(string rawError)
     {
         string text = SanitizeReportText(rawError);
+        string feature = ExtractReportValue(text, "기능:");
+        string stage = ExtractReportValue(text, "세부 단계:");
+        string site = ExtractReportValue(text, "사이트:");
+        string target = ExtractReportValue(text, "대상:");
         string url = ExtractReportValue(text, "URL:");
         string cause = "";
 
@@ -7649,7 +8723,10 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
 
         return string.Join("\n", new[]
         {
-            $"**URL**: {SanitizeReportText(string.IsNullOrWhiteSpace(url) ? "\uD655\uC778 \uBD88\uAC00" : url)}",
+            $"**사용 기능**: {SanitizeReportText(string.IsNullOrWhiteSpace(feature) ? "확인 불가" : feature)}",
+            $"**세부 단계**: {SanitizeReportText(string.IsNullOrWhiteSpace(stage) ? "확인 불가" : stage)}",
+            $"**대상 사이트**: {SanitizeReportText(string.IsNullOrWhiteSpace(site) ? "확인 불가" : site)}",
+            $"**대상 URL/파일**: {SanitizeReportText(string.IsNullOrWhiteSpace(target) ? (string.IsNullOrWhiteSpace(url) ? "확인 불가" : url) : target)}",
             $"**\uC624\uB958 \uB0B4\uC6A9**: {SanitizeReportText(cause)}"
         });
     }
@@ -7687,11 +8764,24 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
     }
 
     // 전역 오류 보고용 헬퍼
-    private void ReportError(string msg, Exception? ex = null)
+    private void ReportError(string feature, string stage, string msg, Exception? ex = null)
     {
-        string fullMsg = ex != null
-            ? $"{SanitizeReportText(msg)} (\uC6D0\uC778: {SanitizeReportText(ex.Message)})"
-            : SanitizeReportText(msg);
+        string safeMessage = SanitizeReportText(msg);
+        string url = ExtractReportValue(safeMessage, "URL:");
+        string input = ExtractReportValue(safeMessage, "Input:");
+        string target = !string.IsNullOrWhiteSpace(url) ? url : input;
+        string site = !string.IsNullOrWhiteSpace(url)
+            ? GetSiteNameFromUrl(url)
+            : !string.IsNullOrWhiteSpace(input) ? "로컬 파일" : "확인 불가";
+        string detail = ex != null
+            ? $"{safeMessage} (\uC6D0\uC778: {SanitizeReportText(ex.Message)})"
+            : safeMessage;
+        string fullMsg =
+            $"기능: {SanitizeReportText(feature)}\n" +
+            $"세부 단계: {SanitizeReportText(stage)}\n" +
+            $"사이트: {SanitizeReportText(site)}\n" +
+            $"대상: {SanitizeReportText(string.IsNullOrWhiteSpace(target) ? "확인 불가" : target)}\n" +
+            detail;
         Task.Run(async () => await SendHeartbeatReportAsync("Error", fullMsg));
     }
 

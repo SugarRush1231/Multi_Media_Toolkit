@@ -994,7 +994,7 @@ partial class Form1
         lblYtDlpDesc.Name = "lblYtDlpDesc";
         lblYtDlpDesc.Size = new Size(570, 60);
         lblYtDlpDesc.TabIndex = 5;
-        lblYtDlpDesc.Text = "치지직, Instagram, SOOP, Pinterest, X, Vimeo 등 다양한 사이트를 지원합니다.\n비공개/일부공개/나이제한 영상은 [로그인하고 받기]에서 로그인 후 즉시 다운로드하거나 URL로 받을 수 있습니다.";
+        lblYtDlpDesc.Text = "치지직, Instagram, TikTok, SOOP, Pinterest, X, Vimeo 등 다양한 사이트를 지원합니다.\n비공개/일부공개/나이제한 영상은 [로그인하고 받기]에서 로그인 후 즉시 다운로드하거나 URL로 받을 수 있습니다.";
         // 
         // panelYtDlpUrl
         // 
@@ -1789,7 +1789,7 @@ partial class Form1
         lblAbout.Name = "lblAbout";
         lblAbout.Size = new Size(570, 80);
         lblAbout.TabIndex = 17;
-        lblAbout.Text = "Multi Media Toolkit v1.3.1\nCreated by 김병석\n© 2026 all rights reserved.\n(kbs318@naver.com)";
+        lblAbout.Text = "Multi Media Toolkit v1.3.2\nCreated by 김병석\n© 2026 all rights reserved.\n(kbs318@naver.com)";
         lblAbout.TextAlign = ContentAlignment.BottomRight;
         // 
         // lblSettingsTitle

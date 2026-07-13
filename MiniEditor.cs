@@ -1142,7 +1142,11 @@ namespace YoutubeDownloader
                 ShowCenteredMessage("\uC601\uC0C1\uC774 \uC131\uACF5\uC801\uC73C\uB85C \uC800\uC7A5\uB418\uC5C8\uC2B5\uB2C8\uB2E4.");
             }
             catch (OperationCanceledException) { lblStatus.Text = "\uCDE8\uC18C\uB428"; }
-            catch (Exception ex) { lblStatus.Text = "\uC624\uB958"; ShowCenteredMessage("\uB0B4\uBCF4\uB0B4\uAE30 \uC624\uB958: " + ex.Message); }
+            catch (Exception ex)
+            {
+                lblStatus.Text = "\uC624\uB958";
+                ShowCenteredMessage(UserErrorFormatter.Format("미니 편집기에서 파일을 내보내지 못했습니다.", ex));
+            }
             finally
             {
                 btnSave.Enabled = true;

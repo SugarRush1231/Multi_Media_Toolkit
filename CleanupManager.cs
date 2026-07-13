@@ -228,7 +228,7 @@ namespace YoutubeDownloader
         {
             foreach (string folderName in WebViewCacheFolderNames)
             {
-                DeleteDirectoryWithRetry(Path.Combine(basePath, folderName));
+                DeleteDirectoryWithRetry(Path.Combine(basePath, folderName), attempts: 2, delayMs: 50);
             }
         }
 
@@ -236,15 +236,15 @@ namespace YoutubeDownloader
         {
             foreach (string fileName in WebViewHistoryFileNames)
             {
-                DeleteFileOrDirectoryWithRetry(Path.Combine(profilePath, fileName));
+                DeleteFileOrDirectoryWithRetry(Path.Combine(profilePath, fileName), attempts: 2, delayMs: 50);
             }
         }
 
-        private static void DeleteDirectoryWithRetry(string path)
+        private static void DeleteDirectoryWithRetry(string path, int attempts = 20, int delayMs = 150)
         {
             if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return;
 
-            for (int i = 0; i < 20; i++)
+            for (int i = 0; i < attempts; i++)
             {
                 try
                 {
@@ -253,16 +253,16 @@ namespace YoutubeDownloader
                 }
                 catch
                 {
-                    System.Threading.Thread.Sleep(150);
+                    if (i + 1 < attempts) System.Threading.Thread.Sleep(delayMs);
                 }
             }
         }
 
-        private static void DeleteFileOrDirectoryWithRetry(string path)
+        private static void DeleteFileOrDirectoryWithRetry(string path, int attempts = 20, int delayMs = 150)
         {
             if (string.IsNullOrWhiteSpace(path)) return;
 
-            for (int i = 0; i < 20; i++)
+            for (int i = 0; i < attempts; i++)
             {
                 try
                 {
@@ -282,7 +282,7 @@ namespace YoutubeDownloader
                 }
                 catch
                 {
-                    System.Threading.Thread.Sleep(150);
+                    if (i + 1 < attempts) System.Threading.Thread.Sleep(delayMs);
                 }
             }
         }
