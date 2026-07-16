@@ -4,6 +4,22 @@ using System.Text.Json;
 
 namespace YoutubeDownloader;
 
+public class LoginBrowserBookmark
+{
+    public string Title { get; set; } = string.Empty;
+    public string Url { get; set; } = string.Empty;
+    public string IconPath { get; set; } = string.Empty;
+    public string GroupName { get; set; } = string.Empty;
+    public int SortOrder { get; set; } = int.MaxValue;
+}
+
+public class LoginBrowserBuiltInAppLayout
+{
+    public string AppId { get; set; } = string.Empty;
+    public string GroupName { get; set; } = string.Empty;
+    public int SortOrder { get; set; } = int.MaxValue;
+}
+
 public class AppSettings
 {
     public string DefaultDownloadFolder { get; set; } = string.Empty;
@@ -28,6 +44,9 @@ public class AppSettings
     public string InstallId { get; set; } = ""; // 8자리 익명 기기 ID
     public System.Collections.Generic.Dictionary<string, int> UsageStats { get; set; } = new System.Collections.Generic.Dictionary<string, int>();
     public System.Collections.Generic.List<string> DailyDownloadHistory { get; set; } = new System.Collections.Generic.List<string>();
+    public System.Collections.Generic.List<LoginBrowserBookmark> LoginBrowserBookmarks { get; set; } = new System.Collections.Generic.List<LoginBrowserBookmark>();
+    public System.Collections.Generic.List<LoginBrowserBuiltInAppLayout> LoginBrowserBuiltInAppLayouts { get; set; } = new System.Collections.Generic.List<LoginBrowserBuiltInAppLayout>();
+    public int LoginBrowserAppOrderVersion { get; set; } = 0;
 }
 
 public static class SettingsManager

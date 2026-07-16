@@ -74,6 +74,8 @@ public partial class Form1 : Form
     private CheckBox? chkEnableWidgetMode;
     private RoundButton? btnOpenVersionArchive;
     private RoundButton? btnExperimentalFeatures;
+    private RoundButton? btnInquiry;
+    private DateTime _lastInquirySentAt = DateTime.MinValue;
     private Panel? panelExperimentalFeaturesOverlay;
     private RoundPanel? panelExperimentalFeaturesMenu;
     private CheckBox? chkEnableCompletedFileQuickUse;
@@ -110,12 +112,13 @@ public partial class Form1 : Form
     private CancellationTokenSource? _ytDlpCts;
     private int _lastWidth = 800;
     private int _lastHeight = 600;
-    private const string CURR_VERSION = "1.3.2";
+    private const string CURR_VERSION = "1.3.3";
 
     // [Twitter/X Private Extraction] Captured Data
     private string _capturedM3u8Url = "";
     private readonly object _capturedMediaLock = new object();
     private readonly List<string> _capturedMediaUrls = new List<string>();
+    private string _capturedXStatusId = "";
     private int _genericMediaCaptureDepth;
     private string _capturedAuthToken = "";
     private string _capturedCsrfToken = "";
@@ -136,7 +139,27 @@ public partial class Form1 : Form
     private RoundButton? btnLoginBrowserBack;
     private TextBox? txtLoginBrowserAddress;
     private RoundButton? btnLoginBrowserGo;
+    private RoundButton? btnLoginBrowserFavorite;
     private System.Windows.Forms.Timer? _loginFolderAnimationTimer;
+    private System.Windows.Forms.Timer? _loginFolderLongPressTimer;
+    private System.Windows.Forms.Timer? _loginFolderWiggleTimer;
+    private Panel? _pressedLoginFolderTile;
+    private Point _loginFolderPressScreenPoint;
+    private bool _loginFolderEditMode;
+    private bool _loginFolderDragging;
+    private bool _suppressLoginFolderOpen;
+    private int _loginFolderWigglePhase;
+    private string _activeLoginBookmarkGroup = string.Empty;
+    private LoginFolderDropIndicator? _loginFolderDropIndicator;
+    private Panel? _loginFolderDropHighlightedTile;
+    private Color _loginFolderDropHighlightedOriginalColor;
+    private LoginFolderDisplayItem? _loginFolderDropTargetItem;
+    private string _loginFolderDropTargetGroup = string.Empty;
+    private bool _loginFolderDropInsertAfter;
+    private bool _loginFolderDropCreatesGroup;
+    private bool _loginFolderDropOnGroupTile;
+    private bool _loginFolderDropPreviewActive;
+    private bool _loginFolderOuterDropPreviewActive;
     private bool _loginFolderOpening;
     private int _loginFolderAnimationFrame;
     private const int LoginFolderAnimationFrames = 10;
@@ -146,6 +169,68 @@ public partial class Form1 : Form
     private string _loginBrowserDownloadTitle = "";
     private bool _webViewUsingXProfile = false;
     private static readonly string XWebViewDataFolder = Path.Combine(SettingsManager.UserDataFolder, "BrowserData_X");
+
+    private sealed class LoginFolderTileInfo
+    {
+        public LoginFolderDisplayItem? Item { get; init; }
+        public string GroupName { get; init; } = string.Empty;
+        public bool IsGroup { get; init; }
+    }
+
+    private sealed class LoginFolderBuiltInDefinition
+    {
+        public LoginFolderBuiltInDefinition(string appId, string title, string iconText, Color iconColor, string iconFileName)
+        {
+            AppId = appId;
+            Title = title;
+            IconText = iconText;
+            IconColor = iconColor;
+            IconFileName = iconFileName;
+        }
+
+        public string AppId { get; }
+        public string Title { get; }
+        public string IconText { get; }
+        public Color IconColor { get; }
+        public string IconFileName { get; }
+    }
+
+    private sealed class LoginFolderDisplayItem
+    {
+        public LoginBrowserBookmark? Bookmark { get; init; }
+        public LoginBrowserBuiltInAppLayout? BuiltInLayout { get; init; }
+        public LoginFolderBuiltInDefinition? BuiltInDefinition { get; init; }
+        public bool IsBuiltIn => BuiltInLayout != null && BuiltInDefinition != null;
+        public string Title => Bookmark != null ? GetBookmarkDisplayTitle(Bookmark) : BuiltInDefinition?.Title ?? string.Empty;
+        public string GroupName
+        {
+            get => Bookmark?.GroupName ?? BuiltInLayout?.GroupName ?? string.Empty;
+            set
+            {
+                if (Bookmark != null) Bookmark.GroupName = value;
+                if (BuiltInLayout != null) BuiltInLayout.GroupName = value;
+            }
+        }
+        public int SortOrder
+        {
+            get => Bookmark?.SortOrder ?? BuiltInLayout?.SortOrder ?? int.MaxValue;
+            set
+            {
+                if (Bookmark != null) Bookmark.SortOrder = value;
+                if (BuiltInLayout != null) BuiltInLayout.SortOrder = value;
+            }
+        }
+    }
+
+    private static readonly LoginFolderBuiltInDefinition[] LoginFolderBuiltInApps =
+    {
+        new("instagram", "Instagram", "IG", Color.FromArgb(190, 24, 93), "instagram.png"),
+        new("chzzk", "\uCE58\uC9C0\uC9C1", "CZ", Color.FromArgb(22, 163, 74), "chzzk.png"),
+        new("soop", "SOOP", "SOOP", Color.FromArgb(2, 132, 199), "soop.png"),
+        new("x", "X", "X", Color.Black, "x.png"),
+        new("web", "\uC6F9 \uBE0C\uB77C\uC6B0\uC800", "...", Color.FromArgb(71, 85, 105), "etc.png")
+    };
+
     private static readonly HashSet<string> VideoInputExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".mp4", ".webm", ".mkv", ".mov", ".avi", ".flv", ".m4v", ".wmv", ".ts", ".mts", ".m2ts", ".mpeg", ".mpg"
@@ -262,6 +347,8 @@ public partial class Form1 : Form
         NormalizeKoreanUiText(initialPath);
         ConfigureVersionArchiveButton();
         ConfigureExperimentalFeaturesMenu();
+        ConfigureInquiryButton();
+        ConfigureSettingsAboutCard();
         ConfigureTopWidgetModeButton();
         ConfigureVideoPickerTab();
 
@@ -297,29 +384,6 @@ public partial class Form1 : Form
 
         this.Text = $"Multi Media Toolkit (v{CURR_VERSION})";
         lblAbout.Text = $"Multi Media Toolkit v{CURR_VERSION}\r\nCreated by 김병석\r\n(c) {DateTime.Now.Year} all rights reserved.\r\n(kbs318@naver.com)";
-
-        lblAbout.Click += async (s, e) => {
-            _secretClickCount++;
-            if (_secretClickCount >= 10)
-            {
-                _secretClickCount = 0;
-                
-                // UX
-                string originalText = lblAbout.Text;
-                lblAbout.Text = "현황 보고 중...";
-                bool success = await SendHeartbeatReportAsync("\uC218\uB3D9 \uD604\uD669 \uD655\uC778");
-                
-                if (success) 
-                {
-                    ShowCenteredMessage("현재 전체 가동 현황 보고가 완료되었습니다.", "관리자 보고", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-                else
-                {
-                    ShowCenteredMessage("보고 전송에 실패했습니다. 네트워크를 확인해 주세요.", "관리자 보고", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-                lblAbout.Text = originalText;
-            }
-        };
 
         string lastSeenVersion = SettingsManager.Settings.LastSeenVersion?.Trim() ?? "";
         bool currentVersionValid = Version.TryParse(CURR_VERSION.Trim().TrimStart('v', 'V'), out Version? currentVersion);
@@ -489,8 +553,6 @@ public partial class Form1 : Form
         catch {  }
     }
 
-    private int _secretClickCount = 0;
-    
     private void Form1_Load(object sender, EventArgs e)
     {
         // Load Settings into UI
@@ -1134,6 +1196,117 @@ public partial class Form1 : Form
         btnOpenVersionArchive.BringToFront();
     }
 
+    private void ConfigureInquiryButton()
+    {
+        if (btnInquiry != null) return;
+
+        btnInquiry = new RoundButton
+        {
+            Name = "btnInquiry",
+            Text = "문의하기",
+            Size = new Size(104, 34),
+            Location = new Point(Math.Max(20, tabSettings.ClientSize.Width - 124), 16),
+            BorderRadius = 14,
+            BackColor = Color.FromArgb(226, 232, 240),
+            ForeColor = Color.FromArgb(51, 65, 85),
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            UseVisualStyleBackColor = false
+        };
+        btnInquiry.FlatAppearance.BorderSize = 0;
+        btnInquiry.Click += BtnInquiry_Click;
+        tabSettings.Controls.Add(btnInquiry);
+        btnInquiry.BringToFront();
+
+        var tip = new ToolTip { ShowAlways = true };
+        tip.SetToolTip(btnInquiry, "문제나 의견을 제작자에게 바로 보냅니다.");
+    }
+
+    private async void BtnInquiry_Click(object? sender, EventArgs e)
+    {
+        if (DateTime.Now - _lastInquirySentAt < TimeSpan.FromSeconds(30))
+        {
+            ShowCenteredMessage("문의는 30초 후에 다시 보낼 수 있습니다.", "문의하기", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var dialog = new InquiryForm();
+        if (dialog.ShowDialog(this) != DialogResult.OK || btnInquiry == null) return;
+
+        string originalText = btnInquiry.Text;
+        btnInquiry.Enabled = false;
+        btnInquiry.Text = "전송 중...";
+        try
+        {
+            bool sent = await SendInquiryAsync(dialog.InquiryTitle, dialog.Message);
+            if (!sent)
+            {
+                ShowCenteredMessage(
+                    "문의를 전송하지 못했습니다. 인터넷 연결을 확인한 뒤 다시 시도해 주세요.",
+                    "문의 전송 실패",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            _lastInquirySentAt = DateTime.Now;
+            ShowCenteredMessage("문의가 전송되었습니다.", "문의 완료", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch
+        {
+            ShowCenteredMessage(
+                "문의를 전송하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+                "문의 전송 실패",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            btnInquiry.Text = originalText;
+            btnInquiry.Enabled = true;
+        }
+    }
+
+    private async Task<bool> SendInquiryAsync(string inquiryTitle, string message)
+    {
+        string p1 = "ht";
+        string p2 = "tps://discord.com/api/webhooks/1526570399943491744/";
+        string p3 = "j9x37o55fFAtf5TeJ1A28RDnkJ8aaUhhnWCAJ9cdlnisnYrUwZzS-1ncm94dW2sI_2Xu";
+        string webhookUrl = p1 + p2 + p3;
+        string safeTitle = SanitizeInquiryText(inquiryTitle, 100, "제목 없음");
+        string safeMessage = SanitizeInquiryText(message, 1000, "내용 없음");
+
+        var payload = new
+        {
+            username = "MMT 문의 접수",
+            allowed_mentions = new { parse = Array.Empty<string>() },
+            content =
+                "**[사용자 문의]**\n" +
+                $"**제목**: {safeTitle}\n\n" +
+                $"**문의 내용**\n{safeMessage}\n\n" +
+                $"**시각**: `{DateTime.Now:yyyy-MM-dd HH:mm:ss}`"
+        };
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using HttpResponseMessage response = await _httpClient.PostAsync(
+            webhookUrl,
+            new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
+            timeout.Token);
+        return response.IsSuccessStatusCode;
+    }
+
+    private static string SanitizeInquiryText(string? text, int maxLength, string emptyValue)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return emptyValue;
+        string value = text.Trim()
+            .Replace("\r\n", "\n")
+            .Replace('\r', '\n')
+            .Replace("```", "'''", StringComparison.Ordinal)
+            .Replace('@', '＠');
+        return value.Length <= maxLength ? value : value[..maxLength];
+    }
+
     private void ConfigureExperimentalFeaturesMenu()
     {
         if (btnExperimentalFeatures == null)
@@ -1161,6 +1334,36 @@ public partial class Form1 : Form
         int left = btnOpenVersionArchive?.Right + 10 ?? 175;
         btnExperimentalFeatures.Location = new Point(left, Math.Max(420, tabSettings.ClientSize.Height - 54));
         btnExperimentalFeatures.BringToFront();
+    }
+
+    private void ConfigureSettingsAboutCard()
+    {
+        lblAbout.Visible = true;
+        lblAbout.Enabled = true;
+        lblAbout.AutoSize = true;
+        lblAbout.MaximumSize = Size.Empty;
+        lblAbout.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+        lblAbout.TextAlign = ContentAlignment.BottomRight;
+        lblAbout.BackColor = tabSettings.BackColor;
+        lblAbout.Cursor = Cursors.Default;
+        lblAbout.Size = lblAbout.GetPreferredSize(Size.Empty);
+
+        tabSettings.Resize -= TabSettings_ResizeAboutCard;
+        tabSettings.Resize += TabSettings_ResizeAboutCard;
+        PositionSettingsAboutCard();
+    }
+
+    private void TabSettings_ResizeAboutCard(object? sender, EventArgs e)
+    {
+        PositionSettingsAboutCard();
+    }
+
+    private void PositionSettingsAboutCard()
+    {
+        int left = Math.Max(310, tabSettings.ClientSize.Width - lblAbout.Width - 18);
+        int top = Math.Max(0, tabSettings.ClientSize.Height - lblAbout.Height - 12);
+        lblAbout.Location = new Point(left, top);
+        lblAbout.BringToFront();
     }
 
     private void ShowExperimentalFeaturesMenu()
@@ -1728,10 +1931,21 @@ public partial class Form1 : Form
         if (lower.Contains("chzzk.naver.com") || lower.Contains("pstatic.net")) return "Chzzk";
         if (lower.Contains("instagram.com")) return "Instagram";
         if (lower.Contains("tiktok.com")) return "TikTok";
-        if (lower.Contains("x.com") || lower.Contains("twitter.com")) return "X";
+        if (IsXPlatformUrl(url)) return "X";
         if (lower.Contains("anilife") || lower.Contains("gcdn.app")) return "Anilife";
         if (lower.Contains("linkkf")) return "Linkkf";
         return "WebSite";
+    }
+
+    private static bool IsXPlatformUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)) return false;
+        string host = uri.Host;
+        return host.Equals("x.com", StringComparison.OrdinalIgnoreCase) ||
+               host.EndsWith(".x.com", StringComparison.OrdinalIgnoreCase) ||
+               host.Equals("twitter.com", StringComparison.OrdinalIgnoreCase) ||
+               host.EndsWith(".twitter.com", StringComparison.OrdinalIgnoreCase) ||
+               host.Equals("video.twimg.com", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string GetDownloadSaveDirectory(string url, bool audioOnly)
@@ -2727,6 +2941,35 @@ public partial class Form1 : Form
         Activate();
     }
 
+    public void ActivateFromSecondLaunch()
+    {
+        if (IsDisposed) return;
+        if (InvokeRequired)
+        {
+            BeginInvoke(new Action(ActivateFromSecondLaunch));
+            return;
+        }
+
+        ShowMainFromWidget();
+        if (WindowState == FormWindowState.Minimized)
+            WindowState = FormWindowState.Normal;
+
+        bool restoreTopMost = TopMost;
+        TopMost = true;
+        BringToFront();
+        Activate();
+        SetForegroundWindow(Handle);
+
+        var releaseTopMostTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        releaseTopMostTimer.Tick += (_, _) =>
+        {
+            releaseTopMostTimer.Stop();
+            releaseTopMostTimer.Dispose();
+            if (!IsDisposed) TopMost = restoreTopMost;
+        };
+        releaseTopMostTimer.Start();
+    }
+
     private void ShowDownloadWidget()
     {
         if (_downloadWidgetForm == null || _downloadWidgetForm.IsDisposed)
@@ -3627,10 +3870,14 @@ public partial class Form1 : Form
         return UserErrorFormatter.GetCause(FlattenExceptionMessage(ex));
     }
 
-    private static bool IsLoginRequiredDownloadError(Exception ex)
+    private static bool IsLoginRequiredDownloadError(string url, Exception ex)
     {
         string lower = FlattenExceptionMessage(ex).ToLowerInvariant();
-        return lower.Contains("instagram sent an empty media response") ||
+        bool xVideoMayRequireLogin = IsXPlatformUrl(url) &&
+            lower.Contains("no video could be found in this tweet");
+
+        return xVideoMayRequireLogin ||
+               lower.Contains("instagram sent an empty media response") ||
                lower.Contains("use --cookies-from-browser") ||
                lower.Contains("use --cookies for the authentication") ||
                lower.Contains("login required") ||
@@ -3650,28 +3897,34 @@ public partial class Form1 : Form
         if (lower.Contains("youtube.com") || lower.Contains("youtu.be")) return "YouTube";
         if (lower.Contains("chzzk.naver.com")) return "치지직";
         if (lower.Contains("sooplive") || lower.Contains("afreecatv.com")) return "SOOP";
-        if (lower.Contains("x.com") || lower.Contains("twitter.com")) return "X";
+        if (IsXPlatformUrl(url)) return "X";
         return "웹 브라우저";
     }
 
     private async Task<bool> HandleLoginRequiredDownloadErrorAsync(string url, Exception ex, bool alreadyInLoginBrowser)
     {
-        if (!IsLoginRequiredDownloadError(ex)) return false;
+        if (!IsLoginRequiredDownloadError(url, ex)) return false;
 
         string siteName = GetLoginSiteNameForUrl(url);
         if (alreadyInLoginBrowser)
         {
+            string message = siteName == "X"
+                ? "X에 로그인된 상태에서도 게시물의 영상을 찾지 못했습니다.\n\n브라우저에서 해당 영상이 실제로 재생되는지 확인해 주세요. 삭제됐거나 영상이 없는 게시물은 다운로드할 수 없습니다."
+                : $"{siteName} 로그인 또는 시청 권한을 확인해 주세요.\n\n브라우저에서 해당 영상이 정상 재생되는지 확인한 뒤 다시 다운로드해 주세요.";
             ShowCenteredMessage(
-                $"{siteName} 로그인 또는 시청 권한을 확인해 주세요.\n\n브라우저에서 해당 영상이 정상 재생되는지 확인한 뒤 다시 다운로드해 주세요.",
+                message,
                 "로그인 확인 필요",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
             return true;
         }
 
-        string prompt = siteName == "Instagram"
-            ? "Instagram 로그인이 필요한 영상입니다.\n\n로그인하시면 다운로드할 수 있습니다.\n지금 [로그인 후 다운]을 열어 로그인하시겠습니까?"
-            : $"이 영상은 {siteName} 로그인이 필요한 것으로 보입니다.\n\n로그인하시면 다운로드할 수 있습니다.\n지금 [로그인 후 다운]을 열어 로그인하시겠습니까?";
+        string prompt = siteName switch
+        {
+            "Instagram" => "Instagram 로그인이 필요한 영상입니다.\n\n로그인하시면 다운로드할 수 있습니다.\n지금 [로그인 후 다운]을 열어 로그인하시겠습니까?",
+            "X" => "X에서 로그인해야 확인할 수 있는 영상일 수 있습니다.\n\n영상이 삭제되지 않았고 계정에 시청 권한이 있다면 로그인 후 다운로드할 수 있습니다.\n지금 [로그인 후 다운]에서 X에 로그인하시겠습니까?",
+            _ => $"이 영상은 {siteName} 로그인이 필요한 것으로 보입니다.\n\n로그인하시면 다운로드할 수 있습니다.\n지금 [로그인 후 다운]을 열어 로그인하시겠습니까?"
+        };
 
         DialogResult result = ShowCenteredMessage(
             prompt,
@@ -4241,6 +4494,7 @@ public partial class Form1 : Form
                 {
                     string capturedUrl = "";
                     bool isAnilife = targetUrl.Contains("anilife.app", StringComparison.OrdinalIgnoreCase);
+                    bool isXStatusTarget = IsXStatusPageUrl(targetUrl);
                     bool needsBrowserCapture = isAnilife ||
                         targetUrl.Contains("chzzk.naver.com", StringComparison.OrdinalIgnoreCase) ||
                         targetUrl.Contains("sooplive", StringComparison.OrdinalIgnoreCase) ||
@@ -4287,7 +4541,18 @@ public partial class Form1 : Form
                                 {
                                     if (webViewX.CoreWebView2 != null)
                                     {
-                                        await webViewX.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('video').forEach(v => { v.muted = true; v.play().catch(() => {}); }); window.scrollTo(0, Math.max(document.body.scrollHeight / 3, 1));");
+                                        string activationScript = isXStatusTarget
+                                            ? @"(() => {
+    const videos = Array.from(document.querySelectorAll('video'));
+    const visible = videos
+        .map(video => ({ video, rect: video.getBoundingClientRect() }))
+        .filter(item => item.rect.bottom > 0 && item.rect.right > 0 && item.rect.top < innerHeight && item.rect.left < innerWidth)
+        .sort((a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height));
+    const video = visible[0]?.video;
+    if (video) { video.muted = true; video.play().catch(() => {}); }
+})()"
+                                            : "document.querySelectorAll('video').forEach(v => { v.muted = true; v.play().catch(() => {}); }); window.scrollTo(0, Math.max(document.body.scrollHeight / 3, 1));";
+                                        await webViewX.CoreWebView2.ExecuteScriptAsync(activationScript);
                                     }
                                 }
                                 catch { }
@@ -4349,9 +4614,7 @@ public partial class Form1 : Form
                 await _ytDlpBrowserSemaphore.WaitAsync(job.JobCts.Token);
                 try
                 {
-                    bool useXCookieProfile = job.UseXPrivateMode ||
-                        lowerUrlSuccess.Contains("x.com") ||
-                        lowerUrlSuccess.Contains("twitter.com");
+                    bool useXCookieProfile = job.UseXPrivateMode;
                     await EnsureLoginWebViewProfileAsync(useXCookieProfile);
 
                     string exportedCookieFile = await ExportWebViewCookiesAsync(url);
@@ -4417,7 +4680,7 @@ public partial class Form1 : Form
             }
             catch { }
 
-            if (lowerUrlSuccess.Contains("x.com") || lowerUrlSuccess.Contains("twitter.com"))
+            if (IsXPlatformUrl(url))
                 platformSuccess = job.UseXPrivateMode ? "X(비공개)" : "X";
             else if (lowerUrlSuccess.Contains("chzzk")) platformSuccess = "치지직";
             else if (lowerUrlSuccess.Contains("soop") || lowerUrlSuccess.Contains("afreeca")) platformSuccess = "SOOP";
@@ -4617,6 +4880,7 @@ public partial class Form1 : Form
                 {
                     string capturedUrl = "";
                     bool isAnilife = targetUrl.Contains("anilife.app", StringComparison.OrdinalIgnoreCase);
+                    bool isXStatusTarget = IsXStatusPageUrl(targetUrl);
                     bool needsBrowserCapture = isAnilife ||
                         targetUrl.Contains("chzzk.naver.com", StringComparison.OrdinalIgnoreCase) ||
                         targetUrl.Contains("sooplive", StringComparison.OrdinalIgnoreCase) ||
@@ -4661,7 +4925,18 @@ public partial class Form1 : Form
                                 {
                                     if (webViewX.CoreWebView2 != null)
                                     {
-                                        await webViewX.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('video').forEach(v => { v.muted = true; v.play().catch(() => {}); }); window.scrollTo(0, Math.max(document.body.scrollHeight / 3, 1));");
+                                        string activationScript = isXStatusTarget
+                                            ? @"(() => {
+    const videos = Array.from(document.querySelectorAll('video'));
+    const visible = videos
+        .map(video => ({ video, rect: video.getBoundingClientRect() }))
+        .filter(item => item.rect.bottom > 0 && item.rect.right > 0 && item.rect.top < innerHeight && item.rect.left < innerWidth)
+        .sort((a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height));
+    const video = visible[0]?.video;
+    if (video) { video.muted = true; video.play().catch(() => {}); }
+})()"
+                                            : "document.querySelectorAll('video').forEach(v => { v.muted = true; v.play().catch(() => {}); }); window.scrollTo(0, Math.max(document.body.scrollHeight / 3, 1));";
+                                        await webViewX.CoreWebView2.ExecuteScriptAsync(activationScript);
                                     }
                                 }
                                 catch { }
@@ -4727,9 +5002,7 @@ public partial class Form1 : Form
 
                     customHeaders = new Dictionary<string, string>();
 
-                    bool useXCookieProfile = tglXPrivateMode.Checked ||
-                        lowerUrlSuccess.Contains("x.com") ||
-                        lowerUrlSuccess.Contains("twitter.com");
+                    bool useXCookieProfile = tglXPrivateMode.Checked;
                     await EnsureLoginWebViewProfileAsync(useXCookieProfile);
 
                     cookieFile = await ExportWebViewCookiesAsync(url);
@@ -4796,7 +5069,7 @@ public partial class Form1 : Form
                 platformSuccess = uri.Host.Replace("www.", "");
             } catch { }
 
-            if (lowerUrlSuccess.Contains("x.com") || lowerUrlSuccess.Contains("twitter.com")) 
+            if (IsXPlatformUrl(url)) 
                 platformSuccess = tglXPrivateMode.Checked ? "X(비공개)" : "X";
             else if (lowerUrlSuccess.Contains("chzzk")) platformSuccess = "치지직";
             else if (lowerUrlSuccess.Contains("soop") || lowerUrlSuccess.Contains("afreeca")) platformSuccess = "SOOP";
@@ -5154,6 +5427,7 @@ public partial class Form1 : Form
                 CleanupManager.RegisterFile(job.OutputPath);
                 await _youtube.Videos.DownloadAsync(targetStreams, builder.Build(), progress, job.JobCts.Token);
                 CleanupManager.UnregisterFile(job.OutputPath);
+                job.MediaDownloadCompleted = true;
 
                 List<string> subtitlePaths = new List<string>();
                 if (job.DownloadSubtitles)
@@ -5198,6 +5472,8 @@ public partial class Form1 : Form
             }
             catch (OperationCanceledException)
             {
+                CleanupManager.DeleteTemporaryPath(job.TemporaryDownloadDirectory);
+                CleanupManager.DeleteCanceledDownloadArtifacts(job.OutputPath, deleteOutputFile: !job.MediaDownloadCompleted);
                 if (!this.IsDisposed && !this.Disposing && lvQueue.Items.Contains(job.ListViewItem))
                 {
                     this.Invoke((MethodInvoker)delegate {
@@ -5253,6 +5529,8 @@ public partial class Form1 : Form
                 ReportError(job.SourceFeature, "영상 다운로드", $"유튜브 다운로드 실패 ({cause}) | URL: {failedUrl}", ex);
             }            finally
             {
+                CleanupManager.DeleteTemporaryPath(job.TemporaryDownloadDirectory);
+                job.TemporaryDownloadDirectory = "";
                 _activeJobs.Remove(job);
             }
         }
@@ -5403,6 +5681,9 @@ public partial class Form1 : Form
 
         string ytDlpPath = SettingsManager.GetYtDlpPath();
         string ffmpegDir = Path.GetDirectoryName(SettingsManager.GetFFmpegPath()) ?? AppDomain.CurrentDomain.BaseDirectory;
+        job.TemporaryDownloadDirectory = Path.Combine(Path.GetTempPath(), "MMT", "Downloads", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(job.TemporaryDownloadDirectory);
+        CleanupManager.RegisterFile(job.TemporaryDownloadDirectory);
         
         string formatArg = GetYtDlpFallbackFormat(job.Option);
         bool isAudioOnly = !job.Option.IsVideo;
@@ -5416,7 +5697,7 @@ public partial class Form1 : Form
             outputTemplate = Path.Combine(directory, $"{siteTemplate}.%(ext)s");
         }
 
-        string arguments = $"--ignore-config --newline --encoding utf-8 --no-playlist --playlist-items 1 --print \"after_move:MMT_FILE:%(filepath)s\" {GetYtDlpJavaScriptRuntimeArguments()}--ffmpeg-location \"{ffmpegDir}\" ";
+        string arguments = $"--ignore-config --newline --encoding utf-8 --no-playlist --playlist-items 1 --paths temp:\"{job.TemporaryDownloadDirectory}\" --print \"after_move:MMT_FILE:%(filepath)s\" {GetYtDlpJavaScriptRuntimeArguments()}--ffmpeg-location \"{ffmpegDir}\" ";
 
         if (isAudioOnly)
         {
@@ -5497,6 +5778,8 @@ public partial class Form1 : Form
             if (string.IsNullOrWhiteSpace(detail)) detail = "yt-dlp did not return detail.";
             throw new Exception("yt-dlp download failed\n" + detail);
         }
+
+        job.MediaDownloadCompleted = true;
 
         if (!this.IsDisposed && !this.Disposing && lvQueue.Items.Contains(job.ListViewItem))
         {
@@ -6710,7 +6993,16 @@ public partial class Form1 : Form
                     UpdateLoginBrowserNavigationState();
                     await ApplySameWindowBrowserPatchAsync();
                 };
-                webViewX.CoreWebView2.HistoryChanged += (s, e) => UpdateLoginBrowserNavigationState();
+                webViewX.CoreWebView2.HistoryChanged += (s, e) =>
+                {
+                    UpdateLoginBrowserNavigationState();
+                    ResetCapturedXMediaWhenStatusChanges();
+                };
+                webViewX.CoreWebView2.SourceChanged += (s, e) =>
+                {
+                    ResetCapturedXMediaWhenStatusChanges();
+                    UpdateLoginBrowserFavoriteButton();
+                };
                 await webViewX.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(@"
 (() => {
     const rewriteBlankTargets = () => {
@@ -6727,6 +7019,7 @@ public partial class Form1 : Form
 
                 webViewX.CoreWebView2.NavigationStarting += (s, e) => {
                     ClearCapturedMediaCandidates();
+                    _capturedXStatusId = ExtractXStatusId(e.Uri);
                     if (TryBuildGoogleAccountChooserUrl(e.Uri, out string accountChooserUrl))
                     {
                         e.Cancel = true;
@@ -6988,6 +7281,8 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             string source = webViewX.CoreWebView2.Source;
             if (!string.IsNullOrWhiteSpace(source) && source != "about:blank") txtLoginBrowserAddress.Text = source;
         }
+
+        if (btnLoginBrowserFavorite?.Visible == true) UpdateLoginBrowserFavoriteButton();
     }
 
     private void NavigateLoginBrowserBack()
@@ -7007,6 +7302,35 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         }
     }
 
+    private void ResetCapturedXMediaWhenStatusChanges()
+    {
+        string source = webViewX.CoreWebView2?.Source ?? "";
+        string statusId = ExtractXStatusId(source);
+        if (string.IsNullOrWhiteSpace(statusId) ||
+            statusId.Equals(_capturedXStatusId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _capturedXStatusId = statusId;
+        ClearCapturedMediaCandidates();
+    }
+
+    private static string ExtractXStatusId(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return "";
+        System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(
+            url,
+            @"(?:x\.com|twitter\.com)/[^/?#]+/status/(\d+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value : "";
+    }
+
+    private static bool IsXStatusPageUrl(string url)
+    {
+        return !string.IsNullOrWhiteSpace(ExtractXStatusId(url));
+    }
+
     private void RememberCapturedMediaUrl(string url)
     {
         string normalized = NormalizeCapturedMediaUrl(url);
@@ -7018,17 +7342,32 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             _capturedM3u8Url = _capturedMediaUrls
                 .Select((candidate, index) => new { candidate, index, score = ScoreCapturedMediaUrl(candidate) })
                 .OrderByDescending(item => item.score)
-                .ThenBy(item => item.index)
+                .ThenByDescending(item => item.index)
                 .Select(item => item.candidate)
                 .FirstOrDefault() ?? normalized;
         }
     }
 
-    private string GetBestCapturedMediaUrl()
+    private string GetBestCapturedMediaUrl(string preferredMediaId = "")
     {
         lock (_capturedMediaLock)
         {
-            return _capturedM3u8Url;
+            IEnumerable<string> candidates = _capturedMediaUrls;
+            if (!string.IsNullOrWhiteSpace(preferredMediaId))
+            {
+                var matched = _capturedMediaUrls
+                    .Where(url => url.Contains(preferredMediaId, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (matched.Count == 0) return "";
+                candidates = matched;
+            }
+
+            return candidates
+                .Select((candidate, index) => new { candidate, index, score = ScoreCapturedMediaUrl(candidate) })
+                .OrderByDescending(item => item.score)
+                .ThenByDescending(item => item.index)
+                .Select(item => item.candidate)
+                .FirstOrDefault() ?? "";
         }
     }
 
@@ -7046,6 +7385,13 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         if (lower.Contains("master") || lower.Contains("playlist")) score += 80;
         if (lower.Contains("1080")) score += 30;
         else if (lower.Contains("720")) score += 20;
+        System.Text.RegularExpressions.Match resolution = System.Text.RegularExpressions.Regex.Match(lower, @"(?<!\d)(\d{2,4})x(\d{2,4})(?!\d)");
+        if (resolution.Success &&
+            int.TryParse(resolution.Groups[1].Value, out int width) &&
+            int.TryParse(resolution.Groups[2].Value, out int height))
+        {
+            score += Math.Min(180, width * height / 10000);
+        }
         if (lower.Contains("preview") || lower.Contains("thumbnail") || lower.Contains("sprite")) score -= 200;
         return score;
     }
@@ -7340,6 +7686,8 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
     {
         EnsureLoginFolderOverlay();
         if (panelLoginFolderOverlay == null || panelLoginFolder == null) return;
+        _activeLoginBookmarkGroup = string.Empty;
+        RefreshLoginFolderApps();
 
         panelLoginFolderOverlay.SuspendLayout();
         try
@@ -7362,6 +7710,7 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
     private void HideLoginFolder(bool immediate = false)
     {
         if (panelLoginFolderOverlay == null) return;
+        ExitLoginFolderEditMode();
 
         if (immediate || !panelLoginFolderOverlay.Visible)
         {
@@ -7384,7 +7733,8 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             Parent = tabYtDlp,
             Dock = DockStyle.Fill,
             BackColor = Color.FromArgb(241, 245, 249),
-            Visible = false
+            Visible = false,
+            AllowDrop = true
         };
         panelLoginFolderOverlay.Click += (s, e) => HideLoginFolder();
         panelLoginFolderOverlay.Resize += (s, e) => PositionLoginFolder();
@@ -7396,8 +7746,16 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             BackColor = Color.FromArgb(250, 252, 255),
             BorderRadius = 32,
             BorderColor = Color.FromArgb(226, 232, 240),
-            BorderThickness = 1
+            BorderThickness = 1,
+            AllowDrop = true
         };
+        foreach (Control dropTarget in new Control[] { panelLoginFolderOverlay, panelLoginFolder })
+        {
+            dropTarget.DragEnter += LoginFolderOuter_DragEnter;
+            dropTarget.DragOver += LoginFolderOuter_DragOver;
+            dropTarget.DragLeave += LoginFolderOuter_DragLeave;
+            dropTarget.DragDrop += LoginFolderOuter_DragDrop;
+        }
 
         lblLoginFolderTitle = new Label
         {
@@ -7424,19 +7782,27 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         btnLoginFolderClose = new RoundButton
         {
             Parent = panelLoginFolder,
-            Text = "X",
-            Size = new Size(36, 36),
-            Location = new Point(panelLoginFolder.Width - 54, 20),
-            Anchor = AnchorStyles.Top | AnchorStyles.Right,
-            BorderRadius = 18,
+            Text = "← 뒤로",
+            Size = new Size(78, 34),
+            Location = new Point(20, 20),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left,
+            BorderRadius = 15,
             BackColor = Color.FromArgb(226, 232, 240),
             ForeColor = Color.FromArgb(71, 85, 105),
             FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 10F, FontStyle.Bold),
+            Font = new Font("Segoe UI", 9F, FontStyle.Bold),
             UseVisualStyleBackColor = false
         };
         btnLoginFolderClose.FlatAppearance.BorderSize = 0;
-        btnLoginFolderClose.Click += (s, e) => HideLoginFolder();
+        btnLoginFolderClose.Click += LoginFolderClose_Click;
+        foreach (Control dropTarget in new Control[] { lblLoginFolderTitle, lblLoginFolderHint, btnLoginFolderClose })
+        {
+            dropTarget.AllowDrop = true;
+            dropTarget.DragEnter += LoginFolderOuter_DragEnter;
+            dropTarget.DragOver += LoginFolderOuter_DragOver;
+            dropTarget.DragLeave += LoginFolderOuter_DragLeave;
+            dropTarget.DragDrop += LoginFolderOuter_DragDrop;
+        }
 
         panelLoginFolderApps = new FlowLayoutPanel
         {
@@ -7445,19 +7811,29 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             Size = new Size(420, 238),
             BackColor = Color.FromArgb(250, 252, 255),
             FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = true
+            WrapContents = true,
+            AutoScroll = true,
+            AllowDrop = true,
+            Padding = Padding.Empty
         };
+        panelLoginFolderApps.Click += (s, e) => ExitLoginFolderEditMode();
+        panelLoginFolderApps.DragEnter += LoginFolderApps_DragEnter;
+        panelLoginFolderApps.DragOver += LoginFolderApps_DragOver;
+        panelLoginFolderApps.DragLeave += LoginFolderApps_DragLeave;
+        panelLoginFolderApps.DragDrop += LoginFolderApps_DragDrop;
 
-        AddLoginFolderApp("Instagram", "IG", Color.FromArgb(190, 24, 93), "instagram.png");
-        AddLoginFolderApp("\uCE58\uC9C0\uC9C1", "CZ", Color.FromArgb(22, 163, 74), "chzzk.png");
-        AddLoginFolderApp("SOOP", "SOOP", Color.FromArgb(2, 132, 199), "soop.png");
-        AddLoginFolderApp("\uC6F9 \uBE0C\uB77C\uC6B0\uC800", "...", Color.FromArgb(71, 85, 105), "etc.png");
+        RefreshLoginFolderApps();
 
         _loginFolderAnimationTimer = new System.Windows.Forms.Timer
         {
             Interval = 12
         };
         _loginFolderAnimationTimer.Tick += LoginFolderAnimationTimer_Tick;
+
+        _loginFolderLongPressTimer = new System.Windows.Forms.Timer { Interval = 550 };
+        _loginFolderLongPressTimer.Tick += LoginFolderLongPressTimer_Tick;
+        _loginFolderWiggleTimer = new System.Windows.Forms.Timer { Interval = 30 };
+        _loginFolderWiggleTimer.Tick += LoginFolderWiggleTimer_Tick;
 
         var doubleBufferProp = typeof(Control).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
         doubleBufferProp?.SetValue(panelLoginFolderOverlay, true, null);
@@ -7467,11 +7843,189 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         PositionLoginFolder();
     }
 
+    private List<LoginFolderDisplayItem> GetLoginFolderDisplayItems()
+    {
+        SettingsManager.Settings.LoginBrowserBookmarks ??= new List<LoginBrowserBookmark>();
+        SettingsManager.Settings.LoginBrowserBuiltInAppLayouts ??= new List<LoginBrowserBuiltInAppLayout>();
+        bool settingsChanged = false;
+
+        foreach (LoginFolderBuiltInDefinition definition in LoginFolderBuiltInApps)
+        {
+            if (SettingsManager.Settings.LoginBrowserBuiltInAppLayouts.Any(item =>
+                    string.Equals(item.AppId, definition.AppId, StringComparison.OrdinalIgnoreCase))) continue;
+
+            SettingsManager.Settings.LoginBrowserBuiltInAppLayouts.Add(new LoginBrowserBuiltInAppLayout
+            {
+                AppId = definition.AppId
+            });
+            settingsChanged = true;
+        }
+
+        if (SettingsManager.Settings.LoginBrowserAppOrderVersion < 1)
+        {
+            List<int> existingOrderSlots = SettingsManager.Settings.LoginBrowserBuiltInAppLayouts
+                .Where(layout => LoginFolderBuiltInApps.Any(definition =>
+                    string.Equals(definition.AppId, layout.AppId, StringComparison.OrdinalIgnoreCase)))
+                .Where(layout => layout.SortOrder != int.MaxValue)
+                .Select(layout => layout.SortOrder)
+                .OrderBy(order => order)
+                .ToList();
+            if (existingOrderSlots.Count == LoginFolderBuiltInApps.Length)
+            {
+                for (int index = 0; index < LoginFolderBuiltInApps.Length; index++)
+                {
+                    LoginBrowserBuiltInAppLayout? layout = SettingsManager.Settings.LoginBrowserBuiltInAppLayouts.FirstOrDefault(item =>
+                        string.Equals(item.AppId, LoginFolderBuiltInApps[index].AppId, StringComparison.OrdinalIgnoreCase));
+                    if (layout != null) layout.SortOrder = existingOrderSlots[index];
+                }
+            }
+
+            SettingsManager.Settings.LoginBrowserAppOrderVersion = 1;
+            settingsChanged = true;
+        }
+
+        var items = new List<LoginFolderDisplayItem>();
+        foreach (LoginFolderBuiltInDefinition definition in LoginFolderBuiltInApps)
+        {
+            LoginBrowserBuiltInAppLayout? layout = SettingsManager.Settings.LoginBrowserBuiltInAppLayouts.FirstOrDefault(item =>
+                string.Equals(item.AppId, definition.AppId, StringComparison.OrdinalIgnoreCase));
+            if (layout != null)
+                items.Add(new LoginFolderDisplayItem { BuiltInDefinition = definition, BuiltInLayout = layout });
+        }
+
+        items.AddRange(SettingsManager.Settings.LoginBrowserBookmarks
+            .Where(item => IsBookmarkableBrowserUrl(item.Url))
+            .Take(100)
+            .Select(bookmark => new LoginFolderDisplayItem { Bookmark = bookmark }));
+
+        int nextOrder = items.Where(item => item.SortOrder != int.MaxValue)
+            .Select(item => item.SortOrder)
+            .DefaultIfEmpty(-10)
+            .Max() + 10;
+        foreach (LoginFolderDisplayItem item in items.Where(item => item.SortOrder == int.MaxValue))
+        {
+            item.SortOrder = nextOrder;
+            nextOrder += 10;
+            settingsChanged = true;
+        }
+
+        if (settingsChanged) SettingsManager.Save();
+        return items.OrderBy(item => item.SortOrder).ThenBy(item => item.Title, StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
+    private static bool IsSameLoginFolderItem(LoginFolderDisplayItem? first, LoginFolderDisplayItem? second)
+    {
+        if (first == null || second == null) return false;
+        if (first.Bookmark != null || second.Bookmark != null)
+            return ReferenceEquals(first.Bookmark, second.Bookmark);
+        return ReferenceEquals(first.BuiltInLayout, second.BuiltInLayout);
+    }
+
+    private void RefreshLoginFolderApps()
+    {
+        if (panelLoginFolderApps == null) return;
+        ExitLoginFolderEditMode();
+
+        foreach (Control control in panelLoginFolderApps.Controls.Cast<Control>().ToArray())
+        {
+            control.ContextMenuStrip?.Dispose();
+            if (control is Panel tile)
+            {
+                foreach (PictureBox picture in tile.Controls.OfType<PictureBox>())
+                    picture.Image?.Dispose();
+            }
+            control.Dispose();
+        }
+        panelLoginFolderApps.Controls.Clear();
+
+        List<LoginFolderDisplayItem> items = GetLoginFolderDisplayItems();
+        if (DissolveSingleItemLoginFolderGroups(items))
+            SettingsManager.Save();
+
+        if (string.IsNullOrWhiteSpace(_activeLoginBookmarkGroup))
+        {
+            if (lblLoginFolderTitle != null) lblLoginFolderTitle.Text = "로그인 브라우저";
+            if (lblLoginFolderHint != null)
+                lblLoginFolderHint.Text = "사이트를 선택하거나 즐겨찾기를 길게 눌러 순서를 바꿀 수 있습니다.";
+
+            foreach (IGrouping<string, LoginFolderDisplayItem> group in items
+                         .Where(item => !string.IsNullOrWhiteSpace(item.GroupName))
+                         .GroupBy(item => item.GroupName.Trim(), StringComparer.OrdinalIgnoreCase)
+                         .OrderBy(group => group.Min(item => item.SortOrder)))
+            {
+                AddLoginFolderGroup(group.Key, group.ToList());
+            }
+
+            foreach (LoginFolderDisplayItem item in items.Where(item => string.IsNullOrWhiteSpace(item.GroupName)))
+                AddLoginFolderDisplayItem(item);
+        }
+        else
+        {
+            if (lblLoginFolderTitle != null) lblLoginFolderTitle.Text = _activeLoginBookmarkGroup;
+            if (lblLoginFolderHint != null)
+                lblLoginFolderHint.Text = "즐겨찾기를 누르면 열리고, 길게 누르면 순서를 바꿀 수 있습니다.";
+
+            foreach (LoginFolderDisplayItem item in items.Where(item =>
+                         string.Equals(item.GroupName.Trim(), _activeLoginBookmarkGroup, StringComparison.OrdinalIgnoreCase)))
+            {
+                AddLoginFolderDisplayItem(item);
+            }
+        }
+
+        int rows = Math.Max(1, (panelLoginFolderApps.Controls.Count + 2) / 3);
+        panelLoginFolderApps.AutoScrollMinSize = new Size(0, rows * 112);
+        panelLoginFolderApps.HorizontalScroll.Enabled = false;
+        panelLoginFolderApps.HorizontalScroll.Visible = false;
+        UpdateLoginFolderHeader(showContent: true);
+    }
+
+    private bool DissolveSingleItemLoginFolderGroups(List<LoginFolderDisplayItem> items)
+    {
+        HashSet<string> groupsToDissolve = items
+            .Where(item => !string.IsNullOrWhiteSpace(item.GroupName))
+            .GroupBy(item => item.GroupName.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() <= 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (groupsToDissolve.Count == 0) return false;
+
+        foreach (LoginFolderDisplayItem item in items.Where(item =>
+                     groupsToDissolve.Contains(item.GroupName.Trim())))
+        {
+            item.GroupName = string.Empty;
+        }
+
+        if (groupsToDissolve.Contains(_activeLoginBookmarkGroup.Trim()))
+            _activeLoginBookmarkGroup = string.Empty;
+
+        return true;
+    }
+
+    private void UpdateLoginFolderHeader(bool showContent)
+    {
+        bool isGroupOpen = !string.IsNullOrWhiteSpace(_activeLoginBookmarkGroup);
+
+        if (lblLoginFolderTitle != null)
+        {
+            lblLoginFolderTitle.Location = isGroupOpen ? new Point(112, 22) : new Point(24, 22);
+            lblLoginFolderTitle.Size = isGroupOpen ? new Size(236, 30) : new Size(280, 30);
+        }
+
+        if (btnLoginFolderClose == null) return;
+
+        btnLoginFolderClose.Text = "← 뒤로";
+        btnLoginFolderClose.Location = new Point(20, 20);
+        btnLoginFolderClose.Visible = showContent && isGroupOpen;
+        btnLoginFolderClose.Enabled = btnLoginFolderClose.Visible;
+        if (btnLoginFolderClose.Visible) btnLoginFolderClose.BringToFront();
+    }
+
     private void SetLoginFolderContentVisible(bool visible)
     {
         if (lblLoginFolderTitle != null) lblLoginFolderTitle.Visible = visible;
         if (lblLoginFolderHint != null) lblLoginFolderHint.Visible = visible;
-        if (btnLoginFolderClose != null) btnLoginFolderClose.Visible = false;
+        UpdateLoginFolderHeader(visible);
         if (panelLoginFolderApps != null) panelLoginFolderApps.Visible = visible;
     }
 
@@ -7557,23 +8111,804 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         panelLoginFolder.Location = new Point(x, y);
     }
 
-    private void AddLoginFolderApp(string siteName, string iconText, Color iconColor, string? iconFileName = null)
+    private void AddLoginFolderDisplayItem(LoginFolderDisplayItem item)
+    {
+        if (item.IsBuiltIn)
+            AddLoginFolderBuiltInApp(item);
+        else if (item.Bookmark != null)
+            AddLoginFolderBookmark(item);
+    }
+
+    private void AddLoginFolderBuiltInApp(LoginFolderDisplayItem item)
+    {
+        LoginFolderBuiltInDefinition? definition = item.BuiltInDefinition;
+        if (definition == null) return;
+
+        EventHandler openBuiltInApp = async (s, e) =>
+        {
+            if (ConsumeSuppressedLoginFolderOpen()) return;
+            await OpenLoginSiteFromFolderAsync(definition.Title);
+        };
+        Panel? tile = AddLoginFolderApp(
+            definition.Title,
+            definition.IconText,
+            definition.IconColor,
+            definition.IconFileName,
+            customOpenHandler: openBuiltInApp);
+        if (tile == null) return;
+
+        tile.Tag = new LoginFolderTileInfo { Item = item };
+        tile.ContextMenuStrip = BuildBuiltInAppContextMenu(item);
+        ConfigureLoginFolderEditableTile(tile);
+    }
+
+    private void AddLoginFolderBookmark(LoginFolderDisplayItem item)
+    {
+        LoginBrowserBookmark? bookmark = item.Bookmark;
+        if (bookmark == null) return;
+        string trimmedTitle = bookmark.Title?.Trim() ?? string.Empty;
+        string fallbackText = trimmedTitle.Length > 0 && char.IsLetterOrDigit(trimmedTitle[0])
+            ? char.ToUpperInvariant(trimmedTitle[0]).ToString()
+            : "★";
+        EventHandler openBookmark = async (s, e) =>
+        {
+            if (ConsumeSuppressedLoginFolderOpen()) return;
+            await OpenLoginBrowserBookmarkAsync(bookmark);
+        };
+
+        Panel? tile = AddLoginFolderApp(
+            GetBookmarkDisplayTitle(bookmark),
+            fallbackText,
+            Color.FromArgb(51, 65, 85),
+            customIconPath: bookmark.IconPath,
+            customOpenHandler: openBookmark);
+        if (tile == null) return;
+
+        tile.Tag = new LoginFolderTileInfo { Item = item };
+        tile.ContextMenuStrip = BuildBookmarkContextMenu(bookmark);
+        AddLoginFolderBookmarkDeleteButton(tile, bookmark);
+        ConfigureLoginFolderEditableTile(tile);
+    }
+
+    private void AddLoginFolderGroup(string groupName, List<LoginFolderDisplayItem> items)
+    {
+        EventHandler openGroup = (s, e) =>
+        {
+            if (ConsumeSuppressedLoginFolderOpen()) return;
+            _activeLoginBookmarkGroup = groupName;
+            RefreshLoginFolderApps();
+        };
+
+        Panel? tile = AddLoginFolderApp(
+            groupName.Length <= 14 ? groupName : groupName[..13] + "…",
+            "▦",
+            Color.FromArgb(71, 85, 105),
+            customOpenHandler: openGroup,
+            customIconImage: CreateBookmarkGroupIcon(items));
+        if (tile == null) return;
+
+        tile.Tag = new LoginFolderTileInfo { GroupName = groupName, IsGroup = true };
+        tile.ContextMenuStrip = BuildBookmarkGroupContextMenu(groupName);
+        ConfigureLoginFolderEditableTile(tile);
+    }
+
+    private static Bitmap CreateBookmarkGroupIcon(IReadOnlyList<LoginFolderDisplayItem> items)
+    {
+        const int size = 64;
+        var bitmap = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using Graphics graphics = Graphics.FromImage(bitmap);
+        graphics.Clear(Color.Transparent);
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using GraphicsPath path = CreateRoundedRectanglePath(new RectangleF(1.5F, 1.5F, 61F, 61F), 15F);
+        using (var brush = new SolidBrush(Color.FromArgb(226, 232, 240))) graphics.FillPath(brush, path);
+        using (var pen = new Pen(Color.FromArgb(148, 163, 184), 1F)) graphics.DrawPath(pen, path);
+
+        Rectangle[] slots =
+        {
+            new Rectangle(10, 10, 20, 20), new Rectangle(34, 10, 20, 20),
+            new Rectangle(10, 34, 20, 20), new Rectangle(34, 34, 20, 20)
+        };
+        Color[] colors =
+        {
+            Color.FromArgb(14, 165, 233), Color.FromArgb(99, 102, 241),
+            Color.FromArgb(20, 184, 166), Color.FromArgb(244, 63, 94)
+        };
+        using var font = new Font("Segoe UI", 10F, FontStyle.Bold, GraphicsUnit.Pixel);
+
+        for (int index = 0; index < slots.Length; index++)
+        {
+            Rectangle slot = slots[index];
+            using GraphicsPath slotPath = CreateRoundedRectanglePath(slot, 5F);
+            using var brush = new SolidBrush(colors[index]);
+            graphics.FillPath(brush, slotPath);
+            if (index >= items.Count) continue;
+
+            string title = items[index].Title.Trim();
+            string letter = title.Length > 0 && char.IsLetterOrDigit(title[0])
+                ? char.ToUpperInvariant(title[0]).ToString()
+                : "•";
+            TextRenderer.DrawText(
+                graphics,
+                letter,
+                font,
+                slot,
+                Color.White,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        }
+
+        return bitmap;
+    }
+
+    private void AddLoginFolderBookmarkDeleteButton(Panel tile, LoginBrowserBookmark bookmark)
+    {
+        var deleteButton = new RoundButton
+        {
+            Parent = tile,
+            Name = "LoginFolderDeleteButton",
+            Text = "X",
+            Size = new Size(24, 24),
+            Location = new Point(tile.Width - 28, 0),
+            BorderRadius = 12,
+            BackColor = Color.FromArgb(239, 68, 68),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 8F, FontStyle.Bold),
+            UseVisualStyleBackColor = false,
+            Cursor = Cursors.Hand,
+            Visible = _loginFolderEditMode
+        };
+        deleteButton.FlatAppearance.BorderSize = 0;
+        deleteButton.Click += (s, e) => RemoveLoginBrowserBookmark(bookmark);
+        deleteButton.BringToFront();
+    }
+
+    private ContextMenuStrip BuildBookmarkContextMenu(LoginBrowserBookmark bookmark)
+    {
+        var menu = new ContextMenuStrip { ShowImageMargin = false };
+        menu.Items.Add("새 그룹 만들기...", null, (s, e) => CreateBookmarkGroupFor(bookmark));
+
+        var moveMenu = new ToolStripMenuItem("그룹으로 이동");
+        foreach (string groupName in GetLoginFolderGroupNames())
+        {
+            string targetGroup = groupName;
+            moveMenu.DropDownItems.Add(targetGroup, null, (s, e) => MoveBookmarkToGroup(bookmark, targetGroup));
+        }
+        if (!string.IsNullOrWhiteSpace(bookmark.GroupName))
+            moveMenu.DropDownItems.Add("그룹에서 빼기", null, (s, e) => MoveBookmarkToGroup(bookmark, string.Empty));
+        moveMenu.Enabled = moveMenu.DropDownItems.Count > 0;
+        menu.Items.Add(moveMenu);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("즐겨찾기 삭제", null, (s, e) => RemoveLoginBrowserBookmark(bookmark));
+        return menu;
+    }
+
+    private ContextMenuStrip BuildBuiltInAppContextMenu(LoginFolderDisplayItem item)
+    {
+        var menu = new ContextMenuStrip { ShowImageMargin = false };
+        menu.Items.Add("새 그룹 만들기...", null, (s, e) => CreateLoginFolderGroupFor(item));
+
+        var moveMenu = new ToolStripMenuItem("그룹으로 이동");
+        foreach (string groupName in GetLoginFolderGroupNames())
+        {
+            string targetGroup = groupName;
+            moveMenu.DropDownItems.Add(targetGroup, null, (s, e) => MoveLoginFolderItemToGroup(item, targetGroup));
+        }
+        if (!string.IsNullOrWhiteSpace(item.GroupName))
+            moveMenu.DropDownItems.Add("그룹에서 빼기", null, (s, e) => MoveLoginFolderItemToGroup(item, string.Empty));
+        moveMenu.Enabled = moveMenu.DropDownItems.Count > 0;
+        menu.Items.Add(moveMenu);
+        return menu;
+    }
+
+    private List<string> GetLoginFolderGroupNames()
+    {
+        return GetLoginFolderDisplayItems()
+            .Select(item => item.GroupName.Trim())
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private ContextMenuStrip BuildBookmarkGroupContextMenu(string groupName)
+    {
+        var menu = new ContextMenuStrip { ShowImageMargin = false };
+        menu.Items.Add("그룹 이름 변경...", null, (s, e) => RenameBookmarkGroup(groupName));
+        menu.Items.Add("그룹 해제", null, (s, e) => UngroupBookmarks(groupName));
+        return menu;
+    }
+
+    private bool ConsumeSuppressedLoginFolderOpen()
+    {
+        if (!_suppressLoginFolderOpen) return false;
+        _suppressLoginFolderOpen = false;
+        return true;
+    }
+
+    private void CreateBookmarkGroupFor(LoginBrowserBookmark bookmark)
+    {
+        string? groupName = PromptForBookmarkGroupName("새 그룹", "그룹 이름을 입력하세요.");
+        if (string.IsNullOrWhiteSpace(groupName)) return;
+        MoveBookmarkToGroup(bookmark, groupName.Trim());
+    }
+
+    private void CreateLoginFolderGroupFor(LoginFolderDisplayItem item)
+    {
+        string? groupName = PromptForBookmarkGroupName("새 그룹", "그룹 이름을 입력하세요.");
+        if (string.IsNullOrWhiteSpace(groupName)) return;
+        MoveLoginFolderItemToGroup(item, groupName.Trim());
+    }
+
+    private void RenameBookmarkGroup(string oldName)
+    {
+        string? newName = PromptForBookmarkGroupName(oldName, "새 그룹 이름을 입력하세요.");
+        if (string.IsNullOrWhiteSpace(newName) || string.Equals(oldName, newName.Trim(), StringComparison.OrdinalIgnoreCase)) return;
+
+        SettingsManager.Settings.LoginBrowserBookmarks ??= new List<LoginBrowserBookmark>();
+        foreach (LoginBrowserBookmark bookmark in SettingsManager.Settings.LoginBrowserBookmarks.Where(item =>
+                     string.Equals(item.GroupName?.Trim(), oldName, StringComparison.OrdinalIgnoreCase)))
+        {
+            bookmark.GroupName = newName.Trim();
+        }
+        SettingsManager.Settings.LoginBrowserBuiltInAppLayouts ??= new List<LoginBrowserBuiltInAppLayout>();
+        foreach (LoginBrowserBuiltInAppLayout layout in SettingsManager.Settings.LoginBrowserBuiltInAppLayouts.Where(item =>
+                     string.Equals(item.GroupName?.Trim(), oldName, StringComparison.OrdinalIgnoreCase)))
+        {
+            layout.GroupName = newName.Trim();
+        }
+
+        if (string.Equals(_activeLoginBookmarkGroup, oldName, StringComparison.OrdinalIgnoreCase))
+            _activeLoginBookmarkGroup = newName.Trim();
+        SettingsManager.Save();
+        RefreshLoginFolderApps();
+    }
+
+    private void UngroupBookmarks(string groupName)
+    {
+        SettingsManager.Settings.LoginBrowserBookmarks ??= new List<LoginBrowserBookmark>();
+        foreach (LoginBrowserBookmark bookmark in SettingsManager.Settings.LoginBrowserBookmarks.Where(item =>
+                     string.Equals(item.GroupName?.Trim(), groupName, StringComparison.OrdinalIgnoreCase)))
+        {
+            bookmark.GroupName = string.Empty;
+        }
+        SettingsManager.Settings.LoginBrowserBuiltInAppLayouts ??= new List<LoginBrowserBuiltInAppLayout>();
+        foreach (LoginBrowserBuiltInAppLayout layout in SettingsManager.Settings.LoginBrowserBuiltInAppLayouts.Where(item =>
+                     string.Equals(item.GroupName?.Trim(), groupName, StringComparison.OrdinalIgnoreCase)))
+        {
+            layout.GroupName = string.Empty;
+        }
+        _activeLoginBookmarkGroup = string.Empty;
+        SettingsManager.Save();
+        RefreshLoginFolderApps();
+    }
+
+    private void MoveBookmarkToGroup(LoginBrowserBookmark bookmark, string groupName)
+    {
+        bookmark.GroupName = groupName.Trim();
+        SettingsManager.Save();
+        RefreshLoginFolderApps();
+    }
+
+    private void MoveLoginFolderItemToGroup(LoginFolderDisplayItem item, string groupName)
+    {
+        item.GroupName = groupName.Trim();
+        SettingsManager.Save();
+        RefreshLoginFolderApps();
+    }
+
+    private void RemoveLoginBrowserBookmark(LoginBrowserBookmark bookmark)
+    {
+        SettingsManager.Settings.LoginBrowserBookmarks ??= new List<LoginBrowserBookmark>();
+        if (!SettingsManager.Settings.LoginBrowserBookmarks.Remove(bookmark)) return;
+        DeleteUnusedBookmarkIcon(bookmark.IconPath, SettingsManager.Settings.LoginBrowserBookmarks);
+        SettingsManager.Save();
+        RefreshLoginFolderApps();
+    }
+
+    private string? PromptForBookmarkGroupName(string initialValue, string message)
+    {
+        using var dialog = new Form
+        {
+            Text = "즐겨찾기 그룹",
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            ClientSize = new Size(340, 145),
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ShowInTaskbar = false,
+            BackColor = Color.White,
+            Font = new Font("Segoe UI", 9F)
+        };
+        var label = new Label
+        {
+            Parent = dialog,
+            Text = message,
+            Location = new Point(20, 18),
+            Size = new Size(300, 24)
+        };
+        var input = new TextBox
+        {
+            Parent = dialog,
+            Text = initialValue,
+            Location = new Point(20, 48),
+            Size = new Size(300, 25),
+            MaxLength = 24
+        };
+        var ok = new Button
+        {
+            Parent = dialog,
+            Text = "확인",
+            DialogResult = DialogResult.OK,
+            Location = new Point(164, 92),
+            Size = new Size(75, 32)
+        };
+        var cancel = new Button
+        {
+            Parent = dialog,
+            Text = "취소",
+            DialogResult = DialogResult.Cancel,
+            Location = new Point(245, 92),
+            Size = new Size(75, 32)
+        };
+        dialog.AcceptButton = ok;
+        dialog.CancelButton = cancel;
+        dialog.Shown += (s, e) =>
+        {
+            input.Focus();
+            input.SelectAll();
+        };
+
+        return dialog.ShowDialog(this) == DialogResult.OK ? input.Text.Trim() : null;
+    }
+
+    private void LoginFolderClose_Click(object? sender, EventArgs e)
+    {
+        if (!string.IsNullOrWhiteSpace(_activeLoginBookmarkGroup))
+        {
+            _activeLoginBookmarkGroup = string.Empty;
+            RefreshLoginFolderApps();
+            return;
+        }
+
+        HideLoginFolder();
+    }
+
+    private void ConfigureLoginFolderEditableTile(Panel tile)
+    {
+        foreach (Control control in tile.Controls.Cast<Control>().Prepend(tile))
+        {
+            control.MouseDown += (s, e) => LoginFolderTile_MouseDown(tile, e);
+            control.MouseMove += (s, e) => LoginFolderTile_MouseMove(tile, e);
+            control.MouseUp += (s, e) => LoginFolderTile_MouseUp(tile, e);
+            if (tile.ContextMenuStrip != null) control.ContextMenuStrip = tile.ContextMenuStrip;
+        }
+    }
+
+    private void LoginFolderTile_MouseDown(Panel tile, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        _pressedLoginFolderTile = tile;
+        _loginFolderPressScreenPoint = Control.MousePosition;
+        _loginFolderLongPressTimer?.Stop();
+        _loginFolderLongPressTimer?.Start();
+    }
+
+    private void LoginFolderTile_MouseMove(Panel tile, MouseEventArgs e)
+    {
+        if (!_loginFolderEditMode || _loginFolderDragging || _pressedLoginFolderTile != tile ||
+            (Control.MouseButtons & MouseButtons.Left) == 0) return;
+        if (tile.Tag is not LoginFolderTileInfo { Item: not null } tileInfo) return;
+
+        Point current = Control.MousePosition;
+        if (Math.Abs(current.X - _loginFolderPressScreenPoint.X) < 6 &&
+            Math.Abs(current.Y - _loginFolderPressScreenPoint.Y) < 6) return;
+
+        _loginFolderLongPressTimer?.Stop();
+        _loginFolderDragging = true;
+        _suppressLoginFolderOpen = true;
+        try
+        {
+            tile.DoDragDrop(tileInfo.Item, DragDropEffects.Move);
+        }
+        finally
+        {
+            ClearLoginFolderDropPreview();
+            _loginFolderDragging = false;
+            _pressedLoginFolderTile = null;
+        }
+    }
+
+    private void LoginFolderTile_MouseUp(Panel tile, MouseEventArgs e)
+    {
+        _loginFolderLongPressTimer?.Stop();
+        if (_loginFolderEditMode)
+        {
+            _suppressLoginFolderOpen = true;
+            BeginInvoke(new Action(() => _suppressLoginFolderOpen = false));
+        }
+        _pressedLoginFolderTile = null;
+    }
+
+    private void LoginFolderLongPressTimer_Tick(object? sender, EventArgs e)
+    {
+        _loginFolderLongPressTimer?.Stop();
+        if (_pressedLoginFolderTile == null || (Control.MouseButtons & MouseButtons.Left) == 0) return;
+
+        _loginFolderEditMode = true;
+        _suppressLoginFolderOpen = true;
+        _loginFolderWigglePhase = 0;
+        SetLoginFolderDeleteButtonsVisible(true);
+        _loginFolderWiggleTimer?.Start();
+    }
+
+    private void LoginFolderWiggleTimer_Tick(object? sender, EventArgs e)
+    {
+        if (!_loginFolderEditMode || panelLoginFolderApps == null)
+        {
+            _loginFolderWiggleTimer?.Stop();
+            return;
+        }
+
+        _loginFolderWigglePhase = (_loginFolderWigglePhase + 1) % 10000;
+        foreach (Panel tile in panelLoginFolderApps.Controls.OfType<Panel>().Where(item =>
+                     item.Tag is LoginFolderTileInfo && panelLoginFolderApps.ClientRectangle.IntersectsWith(item.Bounds)))
+        {
+            Control? icon = tile.Controls.Cast<Control>().FirstOrDefault(item => item.Name == "LoginFolderAppIcon");
+            if (icon == null) continue;
+            double phase = (_loginFolderWigglePhase * 0.32D) + ((tile.TabIndex & 1) == 0 ? 0D : Math.PI);
+            float angle = (float)(Math.Sin(phase) * 1.7D);
+            if (icon is WigglePictureBox picture)
+            {
+                picture.RotationAngle = angle;
+                picture.Location = new Point(31, 4);
+            }
+            else
+            {
+                icon.Location = new Point(
+                    31 + (int)Math.Round(Math.Sin(phase) * 1D),
+                    4 + (int)Math.Round(Math.Cos(phase) * 0.7D));
+            }
+        }
+    }
+
+    private void ExitLoginFolderEditMode()
+    {
+        _loginFolderLongPressTimer?.Stop();
+        _loginFolderWiggleTimer?.Stop();
+        ClearLoginFolderDropPreview();
+        _loginFolderEditMode = false;
+        _loginFolderDragging = false;
+        _pressedLoginFolderTile = null;
+        _suppressLoginFolderOpen = false;
+
+        if (panelLoginFolderApps == null) return;
+        SetLoginFolderDeleteButtonsVisible(false);
+        foreach (Panel tile in panelLoginFolderApps.Controls.OfType<Panel>())
+        {
+            Control? icon = tile.Controls.Cast<Control>().FirstOrDefault(item => item.Name == "LoginFolderAppIcon");
+            if (icon is WigglePictureBox picture) picture.RotationAngle = 0F;
+            if (icon != null) icon.Location = new Point(31, 4);
+        }
+    }
+
+    private void SetLoginFolderDeleteButtonsVisible(bool visible)
     {
         if (panelLoginFolderApps == null) return;
+        foreach (Control button in panelLoginFolderApps.Controls.OfType<Panel>()
+                     .SelectMany(tile => tile.Controls.Cast<Control>())
+                     .Where(control => control.Name == "LoginFolderDeleteButton"))
+        {
+            button.Visible = visible;
+            if (visible) button.BringToFront();
+        }
+    }
+
+    private void LoginFolderApps_DragEnter(object? sender, DragEventArgs e)
+    {
+        e.Effect = e.Data?.GetDataPresent(typeof(LoginFolderDisplayItem)) == true
+            ? DragDropEffects.Move
+            : DragDropEffects.None;
+    }
+
+    private void LoginFolderOuter_DragEnter(object? sender, DragEventArgs e)
+    {
+        bool canMoveOut = !string.IsNullOrWhiteSpace(_activeLoginBookmarkGroup) &&
+                          e.Data?.GetData(typeof(LoginFolderDisplayItem)) is LoginFolderDisplayItem item &&
+                          string.Equals(item.GroupName.Trim(), _activeLoginBookmarkGroup, StringComparison.OrdinalIgnoreCase);
+        e.Effect = canMoveOut ? DragDropEffects.Move : DragDropEffects.None;
+    }
+
+    private void LoginFolderOuter_DragOver(object? sender, DragEventArgs e)
+    {
+        LoginFolderOuter_DragEnter(sender, e);
+        if (e.Effect == DragDropEffects.None) return;
+        ClearLoginFolderInnerDropPreview();
+        SetLoginFolderOuterDropPreview(true);
+    }
+
+    private void LoginFolderOuter_DragLeave(object? sender, EventArgs e)
+    {
+        SetLoginFolderOuterDropPreview(false);
+    }
+
+    private void LoginFolderOuter_DragDrop(object? sender, DragEventArgs e)
+    {
+        if (e.Data?.GetData(typeof(LoginFolderDisplayItem)) is not LoginFolderDisplayItem source ||
+            string.IsNullOrWhiteSpace(_activeLoginBookmarkGroup) ||
+            !string.Equals(source.GroupName.Trim(), _activeLoginBookmarkGroup, StringComparison.OrdinalIgnoreCase)) return;
+
+        string previousGroup = _activeLoginBookmarkGroup;
+        source.GroupName = string.Empty;
+        SetLoginFolderOuterDropPreview(false);
+        SettingsManager.Save();
+
+        if (!GetLoginFolderDisplayItems().Any(item =>
+                string.Equals(item.GroupName.Trim(), previousGroup, StringComparison.OrdinalIgnoreCase)))
+        {
+            _activeLoginBookmarkGroup = string.Empty;
+        }
+        RefreshLoginFolderApps();
+    }
+
+    private void SetLoginFolderOuterDropPreview(bool visible)
+    {
+        if (_loginFolderOuterDropPreviewActive == visible) return;
+        _loginFolderOuterDropPreviewActive = visible;
+        if (btnLoginFolderClose != null)
+        {
+            btnLoginFolderClose.BackColor = visible ? Color.FromArgb(2, 132, 199) : Color.FromArgb(226, 232, 240);
+            btnLoginFolderClose.ForeColor = visible ? Color.White : Color.FromArgb(71, 85, 105);
+        }
+        if (lblLoginFolderHint != null)
+        {
+            lblLoginFolderHint.Text = visible
+                ? "여기에 놓으면 그룹 밖으로 이동합니다."
+                : string.IsNullOrWhiteSpace(_activeLoginBookmarkGroup)
+                    ? "사이트를 선택하거나 즐겨찾기를 길게 눌러 순서를 바꿀 수 있습니다."
+                    : "앱을 누르면 열리고, 길게 누르면 순서를 바꿀 수 있습니다.";
+            lblLoginFolderHint.BackColor = visible ? Color.FromArgb(224, 242, 254) : Color.Transparent;
+            lblLoginFolderHint.ForeColor = visible ? Color.FromArgb(3, 105, 161) : Color.FromArgb(100, 116, 139);
+            lblLoginFolderHint.TextAlign = visible ? ContentAlignment.MiddleCenter : ContentAlignment.MiddleLeft;
+        }
+    }
+
+    private void LoginFolderApps_DragOver(object? sender, DragEventArgs e)
+    {
+        LoginFolderApps_DragEnter(sender, e);
+        if (e.Effect == DragDropEffects.None || panelLoginFolderApps == null ||
+            e.Data?.GetData(typeof(LoginFolderDisplayItem)) is not LoginFolderDisplayItem source) return;
+
+        Point clientPoint = panelLoginFolderApps.PointToClient(new Point(e.X, e.Y));
+        Control? targetControl = panelLoginFolderApps.GetChildAtPoint(clientPoint);
+        if (ReferenceEquals(targetControl, _loginFolderDropIndicator)) return;
+
+        LoginFolderTileInfo? targetInfo = targetControl?.Tag as LoginFolderTileInfo;
+        if (targetControl == null || targetInfo == null)
+        {
+            ClearLoginFolderDropHighlight();
+            ShowLoginFolderDropIndicator(null, insertAfter: true);
+            SetLoginFolderDropPreview(null, _activeLoginBookmarkGroup, insertAfter: true, createsGroup: false, onGroupTile: false);
+            return;
+        }
+
+        if (targetInfo.IsGroup)
+        {
+            RemoveLoginFolderDropIndicator();
+            HighlightLoginFolderDropTarget((Panel)targetControl);
+            SetLoginFolderDropPreview(null, targetInfo.GroupName, insertAfter: false, createsGroup: false, onGroupTile: true);
+            return;
+        }
+
+        LoginFolderDisplayItem? targetItem = targetInfo.Item;
+        if (targetItem == null || IsSameLoginFolderItem(source, targetItem))
+        {
+            ClearLoginFolderDropPreview();
+            return;
+        }
+
+        Point targetPoint = targetControl.PointToClient(new Point(e.X, e.Y));
+        int groupZoneLeft = (int)Math.Round(targetControl.Width * 0.35D);
+        int groupZoneRight = (int)Math.Round(targetControl.Width * 0.65D);
+        bool canCreateGroup = string.IsNullOrWhiteSpace(_activeLoginBookmarkGroup) &&
+                              string.IsNullOrWhiteSpace(source.GroupName) &&
+                              string.IsNullOrWhiteSpace(targetItem.GroupName);
+        bool createsGroup = canCreateGroup &&
+                            targetPoint.X >= groupZoneLeft && targetPoint.X <= groupZoneRight &&
+                            targetPoint.Y >= 0 && targetPoint.Y <= 76;
+
+        if (createsGroup)
+        {
+            RemoveLoginFolderDropIndicator();
+            HighlightLoginFolderDropTarget((Panel)targetControl);
+            SetLoginFolderDropPreview(targetItem, string.Empty, insertAfter: false, createsGroup: true, onGroupTile: false);
+            return;
+        }
+
+        ClearLoginFolderDropHighlight();
+        bool insertAfter = targetPoint.X > targetControl.Width / 2;
+        ShowLoginFolderDropIndicator(targetControl, insertAfter);
+        SetLoginFolderDropPreview(targetItem, targetItem.GroupName.Trim(), insertAfter, createsGroup: false, onGroupTile: false);
+    }
+
+    private void LoginFolderApps_DragLeave(object? sender, EventArgs e)
+    {
+        ClearLoginFolderDropPreview();
+    }
+
+    private void SetLoginFolderDropPreview(
+        LoginFolderDisplayItem? targetItem,
+        string targetGroup,
+        bool insertAfter,
+        bool createsGroup,
+        bool onGroupTile)
+    {
+        _loginFolderDropTargetItem = targetItem;
+        _loginFolderDropTargetGroup = targetGroup;
+        _loginFolderDropInsertAfter = insertAfter;
+        _loginFolderDropCreatesGroup = createsGroup;
+        _loginFolderDropOnGroupTile = onGroupTile;
+        _loginFolderDropPreviewActive = true;
+    }
+
+    private void ShowLoginFolderDropIndicator(Control? targetControl, bool insertAfter)
+    {
+        if (panelLoginFolderApps == null) return;
+        _loginFolderDropIndicator ??= new LoginFolderDropIndicator
+        {
+            Size = new Size(126, 104),
+            Margin = new Padding(4),
+            Cursor = Cursors.SizeAll
+        };
+
+        panelLoginFolderApps.SuspendLayout();
+        try
+        {
+            if (_loginFolderDropIndicator.Parent == panelLoginFolderApps)
+                panelLoginFolderApps.Controls.Remove(_loginFolderDropIndicator);
+
+            int insertIndex = targetControl == null
+                ? panelLoginFolderApps.Controls.Count
+                : panelLoginFolderApps.Controls.GetChildIndex(targetControl) + (insertAfter ? 1 : 0);
+            panelLoginFolderApps.Controls.Add(_loginFolderDropIndicator);
+            insertIndex = Math.Clamp(insertIndex, 0, panelLoginFolderApps.Controls.Count - 1);
+            panelLoginFolderApps.Controls.SetChildIndex(_loginFolderDropIndicator, insertIndex);
+        }
+        finally
+        {
+            panelLoginFolderApps.ResumeLayout(true);
+        }
+    }
+
+    private void RemoveLoginFolderDropIndicator()
+    {
+        if (panelLoginFolderApps == null || _loginFolderDropIndicator?.Parent != panelLoginFolderApps) return;
+        panelLoginFolderApps.Controls.Remove(_loginFolderDropIndicator);
+        panelLoginFolderApps.PerformLayout();
+    }
+
+    private void HighlightLoginFolderDropTarget(Panel tile)
+    {
+        if (ReferenceEquals(_loginFolderDropHighlightedTile, tile)) return;
+        ClearLoginFolderDropHighlight();
+        _loginFolderDropHighlightedTile = tile;
+        _loginFolderDropHighlightedOriginalColor = tile.BackColor;
+        tile.BackColor = Color.FromArgb(224, 242, 254);
+    }
+
+    private void ClearLoginFolderDropHighlight()
+    {
+        if (_loginFolderDropHighlightedTile != null && !_loginFolderDropHighlightedTile.IsDisposed)
+            _loginFolderDropHighlightedTile.BackColor = _loginFolderDropHighlightedOriginalColor;
+        _loginFolderDropHighlightedTile = null;
+    }
+
+    private void ClearLoginFolderDropPreview()
+    {
+        ClearLoginFolderInnerDropPreview();
+        SetLoginFolderOuterDropPreview(false);
+    }
+
+    private void ClearLoginFolderInnerDropPreview()
+    {
+        RemoveLoginFolderDropIndicator();
+        ClearLoginFolderDropHighlight();
+        _loginFolderDropTargetItem = null;
+        _loginFolderDropTargetGroup = string.Empty;
+        _loginFolderDropInsertAfter = false;
+        _loginFolderDropCreatesGroup = false;
+        _loginFolderDropOnGroupTile = false;
+        _loginFolderDropPreviewActive = false;
+    }
+
+    private void LoginFolderApps_DragDrop(object? sender, DragEventArgs e)
+    {
+        if (panelLoginFolderApps == null || e.Data?.GetData(typeof(LoginFolderDisplayItem)) is not LoginFolderDisplayItem source) return;
+
+        bool previewActive = _loginFolderDropPreviewActive;
+        LoginFolderDisplayItem? targetItem = _loginFolderDropTargetItem;
+        string targetGroup = _loginFolderDropTargetGroup;
+        bool insertAfter = _loginFolderDropInsertAfter;
+        bool createsGroup = _loginFolderDropCreatesGroup;
+        bool onGroupTile = _loginFolderDropOnGroupTile;
+        ClearLoginFolderDropPreview();
+        if (!previewActive) return;
+
+        if (onGroupTile)
+        {
+            ReorderLoginFolderItem(source, null, targetGroup);
+        }
+        else if (createsGroup && targetItem != null)
+        {
+            string? groupName = PromptForBookmarkGroupName("새 그룹", "두 앱을 묶을 그룹 이름을 입력하세요.");
+            if (!string.IsNullOrWhiteSpace(groupName))
+            {
+                source.GroupName = groupName.Trim();
+                targetItem.GroupName = groupName.Trim();
+                SettingsManager.Save();
+                RefreshLoginFolderApps();
+            }
+            return;
+        }
+        else
+        {
+            ReorderLoginFolderItem(source, targetItem, targetGroup, insertAfter);
+        }
+
+        SettingsManager.Save();
+        RefreshLoginFolderApps();
+    }
+
+    private void ReorderLoginFolderItem(
+        LoginFolderDisplayItem source,
+        LoginFolderDisplayItem? target,
+        string targetGroup,
+        bool insertAfterTarget = false)
+    {
+        List<LoginFolderDisplayItem> orderedItems = GetLoginFolderDisplayItems();
+        LoginFolderDisplayItem? storedSource = orderedItems.FirstOrDefault(item => IsSameLoginFolderItem(item, source));
+        if (storedSource == null) return;
+
+        storedSource.GroupName = targetGroup.Trim();
+        orderedItems.Remove(storedSource);
+
+        int insertIndex = target == null
+            ? orderedItems.FindLastIndex(item => string.Equals(item.GroupName.Trim(), targetGroup.Trim(), StringComparison.OrdinalIgnoreCase)) + 1
+            : orderedItems.FindIndex(item => IsSameLoginFolderItem(item, target));
+        if (insertAfterTarget && insertIndex >= 0) insertIndex++;
+        if (insertIndex < 0 || insertIndex > orderedItems.Count) insertIndex = orderedItems.Count;
+        orderedItems.Insert(insertIndex, storedSource);
+
+        for (int index = 0; index < orderedItems.Count; index++)
+            orderedItems[index].SortOrder = index * 10;
+    }
+
+    private Panel? AddLoginFolderApp(
+        string siteName,
+        string iconText,
+        Color iconColor,
+        string? iconFileName = null,
+        string? customIconPath = null,
+        EventHandler? customOpenHandler = null,
+        Image? customIconImage = null)
+    {
+        if (panelLoginFolderApps == null) return null;
 
         var appTile = new Panel
         {
             Size = new Size(126, 104),
-            Margin = new Padding(6),
+            Margin = new Padding(4),
             BackColor = Color.FromArgb(250, 252, 255),
             Cursor = Cursors.Hand
         };
 
         Control appIcon;
-        Image? iconImage = string.IsNullOrWhiteSpace(iconFileName) ? null : LoadLoginIconImage(iconFileName);
+        Image? iconImage = customIconImage ?? (!string.IsNullOrWhiteSpace(customIconPath)
+            ? LoadBookmarkIconImage(customIconPath, iconText)
+            : string.IsNullOrWhiteSpace(iconFileName) ? null : LoadLoginIconImage(iconFileName));
+        if (iconImage == null && customOpenHandler != null)
+            iconImage = CreateBookmarkIcon(null, iconText);
         if (iconImage != null)
         {
-            appIcon = new PictureBox
+            appIcon = new WigglePictureBox
             {
                 Parent = appTile,
                 Image = iconImage,
@@ -7583,6 +8918,7 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
                 BackColor = Color.Transparent,
                 Cursor = Cursors.Hand
             };
+            appIcon.Name = "LoginFolderAppIcon";
         }
         else
         {
@@ -7601,6 +8937,7 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
                 Cursor = Cursors.Hand
             };
             fallbackIcon.FlatAppearance.BorderSize = 0;
+            fallbackIcon.Name = "LoginFolderAppIcon";
             appIcon = fallbackIcon;
         }
 
@@ -7616,12 +8953,13 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             Cursor = Cursors.Hand
         };
 
-        EventHandler openHandler = async (s, e) => await OpenLoginSiteFromFolderAsync(siteName);
+        EventHandler openHandler = customOpenHandler ?? (async (s, e) => await OpenLoginSiteFromFolderAsync(siteName));
         appTile.Click += openHandler;
         appIcon.Click += openHandler;
         appLabel.Click += openHandler;
 
         panelLoginFolderApps.Controls.Add(appTile);
+        return appTile;
     }
 
     private static Image? LoadLoginIconImage(string fileName)
@@ -7639,9 +8977,16 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
 
         if (!File.Exists(iconPath)) return null;
 
+        return LoadImageCopy(iconPath);
+    }
+
+    private static Image? LoadImageCopy(string? imagePath)
+    {
+        if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath)) return null;
+
         try
         {
-            using var stream = new FileStream(iconPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var stream = new FileStream(imagePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var image = Image.FromStream(stream);
             return new Bitmap(image);
         }
@@ -7651,17 +8996,258 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         }
     }
 
-    private async Task OpenLoginSiteFromFolderAsync(string siteName)
+    private static Image? LoadBookmarkIconImage(string? imagePath, string fallbackText)
     {
-        HideLoginFolder(immediate: true);
-        if (siteName == "X")
+        if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath)) return null;
+        if (!Path.GetFileName(imagePath).EndsWith("_raw_v2.png", StringComparison.OrdinalIgnoreCase))
+            return CreateBookmarkIcon(null, fallbackText);
+
+        try
         {
-            _isLoginBrowserMode = false;
-            if (tglInstaPrivateMode.Checked) tglInstaPrivateMode.Checked = false;
-            if (!tglXPrivateMode.Checked) tglXPrivateMode.Checked = true;
+            using var stream = new FileStream(imagePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var source = Image.FromStream(stream);
+            if (source.Width < 4 || source.Height < 4) return null;
+            return CreateBookmarkIcon(source, fallbackText);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static Bitmap CreateBookmarkIcon(Image? source, string fallbackText)
+    {
+        const int canvasSize = 64;
+        var canvas = new Bitmap(canvasSize, canvasSize, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using Graphics graphics = Graphics.FromImage(canvas);
+        graphics.Clear(Color.Transparent);
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+
+        RectangleF background = new RectangleF(1.5F, 1.5F, 61F, 61F);
+        using GraphicsPath backgroundPath = CreateRoundedRectanglePath(background, 15F);
+        using (var backgroundBrush = new SolidBrush(Color.FromArgb(241, 245, 249)))
+            graphics.FillPath(backgroundBrush, backgroundPath);
+        using (var borderPen = new Pen(Color.FromArgb(203, 213, 225), 1F))
+            graphics.DrawPath(borderPen, backgroundPath);
+
+        bool hasLetter = !string.IsNullOrWhiteSpace(fallbackText) && char.IsLetterOrDigit(fallbackText.Trim()[0]);
+        void DrawDefaultGlyph()
+        {
+            if (hasLetter)
+            {
+                string letter = char.ToUpperInvariant(fallbackText.Trim()[0]).ToString();
+                using var font = new Font("Segoe UI", 23F, FontStyle.Bold, GraphicsUnit.Pixel);
+                TextRenderer.DrawText(
+                    graphics,
+                    letter,
+                    font,
+                    new Rectangle(10, 9, 44, 44),
+                    Color.FromArgb(51, 65, 85),
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                return;
+            }
+
+            using var globePen = new Pen(Color.FromArgb(51, 65, 85), 2.2F);
+            RectangleF globe = new RectangleF(18F, 18F, 28F, 28F);
+            graphics.DrawEllipse(globePen, globe);
+            graphics.DrawArc(globePen, new RectangleF(25F, 18F, 14F, 28F), 90F, 180F);
+            graphics.DrawArc(globePen, new RectangleF(25F, 18F, 14F, 28F), 270F, 180F);
+            graphics.DrawLine(globePen, 19F, 27F, 45F, 27F);
+            graphics.DrawLine(globePen, 19F, 37F, 45F, 37F);
+        }
+
+        if (source == null)
+        {
+            DrawDefaultGlyph();
+            return canvas;
+        }
+
+        int longestSide = Math.Max(source.Width, source.Height);
+        if (longestSide <= 32)
+        {
+            DrawDefaultGlyph();
+            int badgeSide = Math.Clamp(longestSide, 12, 20);
+            int badgeX = canvasSize - badgeSide - 6;
+            int badgeY = canvasSize - badgeSide - 6;
+            using var badgeBrush = new SolidBrush(Color.White);
+            graphics.FillEllipse(badgeBrush, badgeX - 2, badgeY - 2, badgeSide + 4, badgeSide + 4);
+            graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+            graphics.DrawImage(source, new Rectangle(badgeX, badgeY, badgeSide, badgeSide));
+            return canvas;
+        }
+
+        const float maximumSide = 44F;
+        float scale = Math.Min(maximumSide / source.Width, maximumSide / source.Height);
+        scale = Math.Min(scale, 1F);
+        int drawWidth = Math.Max(8, (int)Math.Round(source.Width * scale));
+        int drawHeight = Math.Max(8, (int)Math.Round(source.Height * scale));
+        int drawX = (canvasSize - drawWidth) / 2;
+        int drawY = (canvasSize - drawHeight) / 2;
+
+        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        graphics.DrawImage(source, new Rectangle(drawX, drawY, drawWidth, drawHeight));
+        return canvas;
+    }
+
+    private static GraphicsPath CreateRoundedRectanglePath(RectangleF rectangle, float radius)
+    {
+        float diameter = Math.Max(1F, radius * 2F);
+        var path = new GraphicsPath();
+        path.StartFigure();
+        path.AddArc(rectangle.Left, rectangle.Top, diameter, diameter, 180F, 90F);
+        path.AddArc(rectangle.Right - diameter, rectangle.Top, diameter, diameter, 270F, 90F);
+        path.AddArc(rectangle.Right - diameter, rectangle.Bottom - diameter, diameter, diameter, 0F, 90F);
+        path.AddArc(rectangle.Left, rectangle.Bottom - diameter, diameter, diameter, 90F, 90F);
+        path.CloseFigure();
+        return path;
+    }
+
+    private static bool IsBookmarkableBrowserUrl(string? url)
+    {
+        return Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) &&
+               (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+    }
+
+    private static string GetBookmarkDisplayTitle(LoginBrowserBookmark bookmark)
+    {
+        string title = bookmark.Title?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(title) && Uri.TryCreate(bookmark.Url, UriKind.Absolute, out Uri? uri))
+            title = uri.Host;
+        if (string.IsNullOrWhiteSpace(title)) title = "즐겨찾기";
+        return title.Length <= 14 ? title : title[..13] + "…";
+    }
+
+    private async Task OpenLoginBrowserBookmarkAsync(LoginBrowserBookmark bookmark)
+    {
+        if (!IsBookmarkableBrowserUrl(bookmark.Url)) return;
+
+        HideLoginFolder(immediate: true);
+        _isLoginBrowserMode = true;
+        _lastWidth = Width;
+        _lastHeight = Height;
+        await ShowLoginBrowserAsync("웹 브라우저", bookmark.Url);
+
+        if (!Path.GetFileName(bookmark.IconPath ?? string.Empty).EndsWith("_raw_v2.png", StringComparison.OrdinalIgnoreCase))
+        {
+            await Task.Delay(1200);
+            string currentUrl = webViewX.CoreWebView2?.Source ?? string.Empty;
+            if (Uri.TryCreate(currentUrl, UriKind.Absolute, out Uri? currentUri) &&
+                Uri.TryCreate(bookmark.Url, UriKind.Absolute, out Uri? bookmarkUri) &&
+                string.Equals(currentUri.Host, bookmarkUri.Host, StringComparison.OrdinalIgnoreCase))
+            {
+                string refreshedIconPath = await SaveCurrentPageFaviconAsync(currentUrl);
+                if (!string.IsNullOrWhiteSpace(refreshedIconPath))
+                {
+                    bookmark.IconPath = refreshedIconPath;
+                    SettingsManager.Save();
+                }
+            }
+        }
+    }
+
+    private async Task ToggleCurrentPageBookmarkAsync()
+    {
+        if (webViewX.CoreWebView2 == null) return;
+
+        string url = webViewX.CoreWebView2.Source?.Trim() ?? string.Empty;
+        if (!IsBookmarkableBrowserUrl(url))
+        {
+            ShowCenteredMessage("현재 페이지는 즐겨찾기에 추가할 수 없습니다.", "즐겨찾기", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
+        SettingsManager.Settings.LoginBrowserBookmarks ??= new List<LoginBrowserBookmark>();
+        List<LoginBrowserBookmark> bookmarks = SettingsManager.Settings.LoginBrowserBookmarks;
+        LoginBrowserBookmark? existing = bookmarks.FirstOrDefault(item =>
+            string.Equals(item.Url?.Trim(), url, StringComparison.OrdinalIgnoreCase));
+
+        if (existing != null)
+        {
+            bookmarks.Remove(existing);
+            DeleteUnusedBookmarkIcon(existing.IconPath, bookmarks);
+            SettingsManager.Save();
+            UpdateLoginBrowserFavoriteButton();
+            RefreshLoginFolderApps();
+            if (lblXGuide != null) lblXGuide.Text = "즐겨찾기에서 삭제했습니다.";
+            return;
+        }
+
+        if (bookmarks.Count >= 100)
+        {
+            ShowCenteredMessage("즐겨찾기는 최대 100개까지 저장할 수 있습니다.", "즐겨찾기", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        string title = await GetLoginBrowserDownloadTitleAsync();
+        if (string.IsNullOrWhiteSpace(title) && Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
+            title = uri.Host;
+        if (string.IsNullOrWhiteSpace(title)) title = "즐겨찾기";
+        if (title.Length > 80) title = title[..80];
+
+        string iconPath = await SaveCurrentPageFaviconAsync(url);
+        bookmarks.Add(new LoginBrowserBookmark
+        {
+            Title = title,
+            Url = url,
+            IconPath = iconPath
+        });
+        SettingsManager.Save();
+        UpdateLoginBrowserFavoriteButton();
+        RefreshLoginFolderApps();
+        if (lblXGuide != null) lblXGuide.Text = "로그인 브라우저 폴더에 즐겨찾기를 추가했습니다.";
+    }
+
+    private async Task<string> SaveCurrentPageFaviconAsync(string url)
+    {
+        if (webViewX.CoreWebView2 == null || !Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)) return string.Empty;
+
+        string iconFolder = Path.Combine(SettingsManager.UserDataFolder, "FavoriteIcons");
+        string iconName = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(uri.Host.ToLowerInvariant())))[..20] + "_raw_v2.png";
+        string iconPath = Path.Combine(iconFolder, iconName);
+
+        try
+        {
+            Directory.CreateDirectory(iconFolder);
+            using Stream faviconStream = await webViewX.CoreWebView2.GetFaviconAsync(CoreWebView2FaviconImageFormat.Png);
+            using Image source = Image.FromStream(faviconStream);
+            if (source.Width < 4 || source.Height < 4) return string.Empty;
+            source.Save(iconPath, System.Drawing.Imaging.ImageFormat.Png);
+            return iconPath;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static void DeleteUnusedBookmarkIcon(string? iconPath, IEnumerable<LoginBrowserBookmark> remainingBookmarks)
+    {
+        if (string.IsNullOrWhiteSpace(iconPath) || !File.Exists(iconPath)) return;
+        if (remainingBookmarks.Any(item => string.Equals(item.IconPath, iconPath, StringComparison.OrdinalIgnoreCase))) return;
+
+        try { File.Delete(iconPath); } catch { }
+    }
+
+    private void UpdateLoginBrowserFavoriteButton()
+    {
+        if (btnLoginBrowserFavorite == null) return;
+
+        string currentUrl = webViewX.CoreWebView2?.Source?.Trim() ?? string.Empty;
+        SettingsManager.Settings.LoginBrowserBookmarks ??= new List<LoginBrowserBookmark>();
+        bool isFavorite = SettingsManager.Settings.LoginBrowserBookmarks.Any(item =>
+            string.Equals(item.Url?.Trim(), currentUrl, StringComparison.OrdinalIgnoreCase));
+
+        btnLoginBrowserFavorite.Text = isFavorite ? "★" : "☆";
+        btnLoginBrowserFavorite.ForeColor = isFavorite
+            ? Color.FromArgb(234, 179, 8)
+            : Color.FromArgb(71, 85, 105);
+        _loginDownloadToolTip?.SetToolTip(btnLoginBrowserFavorite, isFavorite ? "즐겨찾기에서 삭제" : "현재 페이지 즐겨찾기");
+    }
+
+    private async Task OpenLoginSiteFromFolderAsync(string siteName)
+    {
+        HideLoginFolder(immediate: true);
         if (siteName == "Instagram")
         {
             _isLoginBrowserMode = false;
@@ -7741,7 +9327,8 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
 
     private static bool ShouldShowLoginBrowserAddressBar(string siteName)
     {
-        return siteName == "\uC6F9 \uBE0C\uB77C\uC6B0\uC800" ||
+        return siteName == "X" ||
+               siteName == "\uC6F9 \uBE0C\uB77C\uC6B0\uC800" ||
                siteName == "\uAE30\uD0C0" ||
                siteName == "\uCE58\uC9C0\uC9C1" ||
                siteName == "SOOP";
@@ -7767,6 +9354,8 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         }
 
         if (btnLoginBrowserGo != null) btnLoginBrowserGo.Visible = visible;
+        if (btnLoginBrowserFavorite != null) btnLoginBrowserFavorite.Visible = visible;
+        if (visible) UpdateLoginBrowserFavoriteButton();
         LayoutLoginBrowserAddressBar();
     }
 
@@ -7777,13 +9366,19 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         int left = 222;
         int gap = 8;
         int goWidth = 58;
+        int favoriteWidth = btnLoginBrowserFavorite == null ? 0 : 36;
         int rightLimit = Math.Max(left + 260, panelXTopBar.ClientSize.Width - 110);
-        int addressWidth = Math.Max(180, rightLimit - left - goWidth - gap);
+        int addressWidth = Math.Max(180, rightLimit - left - goWidth - favoriteWidth - (gap * 2));
 
         txtLoginBrowserAddress.Location = new Point(left, 16);
         txtLoginBrowserAddress.Size = new Size(addressWidth, 24);
         btnLoginBrowserGo.Location = new Point(left + addressWidth + gap, 12);
         btnLoginBrowserGo.Size = new Size(goWidth, 36);
+        if (btnLoginBrowserFavorite != null)
+        {
+            btnLoginBrowserFavorite.Location = new Point(btnLoginBrowserGo.Right + gap, 12);
+            btnLoginBrowserFavorite.Size = new Size(favoriteWidth, 36);
+        }
     }
 
     private async Task NavigateLoginBrowserAddressAsync()
@@ -7803,7 +9398,7 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
     {
         return siteName switch
         {
-            "X" => "https://x.com/login",
+            "X" => "https://x.com/",
             "Instagram" => "https://www.instagram.com/accounts/login/",
             "\uCE58\uC9C0\uC9C1" => "https://chzzk.naver.com/",
             "SOOP" => "https://www.sooplive.co.kr/",
@@ -7930,7 +9525,7 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
                 Parent = panelXTopBar,
                 Text = "\u2190",
                 Visible = false,
-                Size = new Size(38, 36),
+                Size = new Size(36, 36),
                 Location = new Point(15, 12),
                 Anchor = AnchorStyles.Top | AnchorStyles.Left,
                 BorderRadius = 18,
@@ -7938,6 +9533,7 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 14F, FontStyle.Bold),
+                TextOffset = new Point(0, -1),
                 UseVisualStyleBackColor = false,
                 Cursor = Cursors.Hand
             };
@@ -7988,6 +9584,26 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             };
             btnLoginBrowserGo.FlatAppearance.BorderSize = 0;
             btnLoginBrowserGo.Click += async (s, e) => await NavigateLoginBrowserAddressAsync();
+
+            btnLoginBrowserFavorite = new RoundButton
+            {
+                Parent = panelXTopBar,
+                Text = "☆",
+                Visible = false,
+                BorderRadius = 18,
+                BackColor = Color.FromArgb(241, 245, 249),
+                ForeColor = Color.FromArgb(71, 85, 105),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI Symbol", 15F, FontStyle.Regular),
+                TextOffset = new Point(0, -1),
+                UseVisualStyleBackColor = false,
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                Cursor = Cursors.Hand
+            };
+            btnLoginBrowserFavorite.FlatAppearance.BorderSize = 0;
+            btnLoginBrowserFavorite.Click += async (s, e) => await ToggleCurrentPageBookmarkAsync();
+            _loginDownloadToolTip ??= new ToolTip();
+            _loginDownloadToolTip.SetToolTip(btnLoginBrowserFavorite, "현재 페이지 즐겨찾기");
             panelXTopBar.Resize += (s, e) => LayoutLoginBrowserAddressBar();
             LayoutLoginBrowserAddressBar();
 
@@ -8012,6 +9628,7 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             btnLoginBrowserBack.BringToFront();
             txtLoginBrowserAddress.BringToFront();
             btnLoginBrowserGo.BringToFront();
+            btnLoginBrowserFavorite.BringToFront();
             
             btnXClose.Parent = panelXTopBar;
             btnXClose.Dock = DockStyle.None;
@@ -8085,11 +9702,46 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
     private async void BtnXDownload_Click(object sender, EventArgs e)
     {
         string currentUrl = webViewX.Source.ToString();
-        _loginBrowserDownloadTitle = _isLoginBrowserMode
+        bool isXPage = tglXPrivateMode.Checked ||
+            currentUrl.Contains("x.com/", StringComparison.OrdinalIgnoreCase) ||
+            currentUrl.Contains("twitter.com/", StringComparison.OrdinalIgnoreCase);
+
+        _loginBrowserDownloadTitle = (_isLoginBrowserMode || isXPage)
             ? await GetLoginBrowserDownloadTitleAsync()
             : "";
 
-        if (_isLoginBrowserMode && !string.IsNullOrWhiteSpace(_capturedM3u8Url) && LooksLikeCapturedMediaUrl(_capturedM3u8Url))
+        if (isXPage)
+        {
+            XActiveMediaContext activeMedia = await GetActiveXMediaContextAsync();
+            string capturedUrl = "";
+
+            if (IsXDirectMediaUrl(activeMedia.DirectUrl))
+            {
+                capturedUrl = NormalizeCapturedMediaUrl(activeMedia.DirectUrl);
+            }
+            else if (!string.IsNullOrWhiteSpace(activeMedia.MediaId))
+            {
+                capturedUrl = GetBestCapturedMediaUrl(activeMedia.MediaId);
+            }
+
+            if (IsXDirectMediaUrl(capturedUrl))
+            {
+                txtYtDlpUrl.Text = capturedUrl;
+            }
+            else if (IsXStatusPageUrl(currentUrl))
+            {
+                txtYtDlpUrl.Text = currentUrl;
+            }
+            else if (IsXStatusPageUrl(activeMedia.StatusUrl))
+            {
+                txtYtDlpUrl.Text = activeMedia.StatusUrl;
+            }
+            else
+            {
+                txtYtDlpUrl.Text = currentUrl;
+            }
+        }
+        else if (_isLoginBrowserMode && !string.IsNullOrWhiteSpace(_capturedM3u8Url) && LooksLikeCapturedMediaUrl(_capturedM3u8Url))
         {
             txtYtDlpUrl.Text = NormalizeCapturedMediaUrl(_capturedM3u8Url);
         }
@@ -8100,6 +9752,87 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         
 
         BtnYtDlpRun_Click(this, EventArgs.Empty);
+    }
+
+    private sealed class XActiveMediaContext
+    {
+        public string DirectUrl { get; set; } = "";
+        public string PosterUrl { get; set; } = "";
+        public string StatusUrl { get; set; } = "";
+        public string MediaId { get; set; } = "";
+    }
+
+    private async Task<XActiveMediaContext> GetActiveXMediaContextAsync()
+    {
+        var context = new XActiveMediaContext();
+        try
+        {
+            if (webViewX.CoreWebView2 == null) return context;
+
+            string result = await webViewX.CoreWebView2.ExecuteScriptAsync(@"
+(() => {
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 1;
+    let best = null;
+    let bestScore = -1;
+
+    for (const video of document.querySelectorAll('video')) {
+        const rect = video.getBoundingClientRect();
+        const width = Math.max(0, Math.min(rect.right, viewportWidth) - Math.max(rect.left, 0));
+        const height = Math.max(0, Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0));
+        const visibleArea = width * height;
+        if (visibleArea <= 0) continue;
+
+        const score = visibleArea + (!video.paused && !video.ended ? 1000000000 : 0);
+        if (score > bestScore) {
+            best = video;
+            bestScore = score;
+        }
+    }
+
+    if (!best) return { directUrl: '', posterUrl: '', statusUrl: location.href };
+
+    const article = best.closest('article');
+    const statusLink = article
+        ? Array.from(article.querySelectorAll('a[href*=""/status/""]')).find(a => /\/status\/\d+/.test(a.href))
+        : null;
+
+    return {
+        directUrl: best.currentSrc || best.src || '',
+        posterUrl: best.poster || '',
+        statusUrl: statusLink?.href || location.href
+    };
+})()");
+
+            using JsonDocument document = JsonDocument.Parse(result);
+            JsonElement root = document.RootElement;
+            context.DirectUrl = root.TryGetProperty("directUrl", out JsonElement directUrl) ? directUrl.GetString() ?? "" : "";
+            context.PosterUrl = root.TryGetProperty("posterUrl", out JsonElement posterUrl) ? posterUrl.GetString() ?? "" : "";
+            context.StatusUrl = root.TryGetProperty("statusUrl", out JsonElement statusUrl) ? statusUrl.GetString() ?? "" : "";
+            context.MediaId = ExtractXMediaId(context.PosterUrl);
+            if (string.IsNullOrWhiteSpace(context.MediaId))
+                context.MediaId = ExtractXMediaId(context.DirectUrl);
+        }
+        catch { }
+
+        return context;
+    }
+
+    private static string ExtractXMediaId(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return "";
+        System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(
+            url,
+            @"(?:amplify_video(?:_thumb)?|ext_tw_video(?:_thumb)?|tweet_video(?:_thumb)?)/(\d+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value : "";
+    }
+
+    private static bool IsXDirectMediaUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)) return false;
+        return uri.Host.Equals("video.twimg.com", StringComparison.OrdinalIgnoreCase) ||
+               uri.Host.EndsWith(".video.twimg.com", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<string> GetLoginBrowserDownloadTitleAsync()
@@ -8310,6 +10043,8 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         public bool DownloadSubtitles { get; set; }
         public string SubtitleLanguagePreset { get; set; } = "Ko";
         public string SourceFeature { get; set; } = "유튜브 다운로더";
+        public string TemporaryDownloadDirectory { get; set; } = "";
+        public bool MediaDownloadCompleted { get; set; }
     }
 
     private class YtDlpDownloadJob
@@ -8632,10 +10367,8 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
 
             string reportTitle = action;
             bool isError = action.Equals("Error", StringComparison.OrdinalIgnoreCase);
-            bool isManual = action.Equals("\uC218\uB3D9 \uD604\uD669 \uD655\uC778", StringComparison.OrdinalIgnoreCase);
 
             if (isError) reportTitle = "\uC624\uB958 \uBCF4\uACE0";
-            else if (isManual) reportTitle = "\uC804\uCCB4 \uC0AC\uC6A9 \uD1B5\uACC4";
             else reportTitle = "\uC790\uB3D9 \uC0C1\uD0DC \uBCF4\uACE0";
 
             string installId = string.IsNullOrWhiteSpace(SettingsManager.Settings.InstallId)
@@ -8670,10 +10403,16 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
             .Where(x => x.Key.StartsWith(todayStr + "_", StringComparison.Ordinal))
             .Select(x => new
             {
-                Feature = SanitizeReportText(x.Key.Replace(todayStr + "_", "")),
+                Feature = NormalizeUsageFeatureName(SanitizeReportText(x.Key.Replace(todayStr + "_", ""))),
                 Count = Math.Max(0, x.Value)
             })
             .Where(x => x.Count > 0 && !string.IsNullOrWhiteSpace(x.Feature))
+            .GroupBy(x => x.Feature, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new
+            {
+                Feature = group.Key,
+                Count = group.Sum(item => item.Count)
+            })
             .OrderByDescending(x => x.Count)
             .Take(12)
             .ToList();
@@ -8695,6 +10434,17 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         }
 
         return string.Join("\n", lines);
+    }
+
+    private static string NormalizeUsageFeatureName(string feature)
+    {
+        if (feature.Equals("video.twimg.com", StringComparison.OrdinalIgnoreCase) ||
+            feature.Equals("twitter.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return "X";
+        }
+
+        return feature;
     }
 
     private static string BuildErrorReportContent(string rawError)

@@ -49,6 +49,9 @@ internal static class UserErrorFormatter
         if (ContainsAny(lower, "403", "forbidden"))
             return "403 차단";
 
+        if (lower.Contains("no video could be found in this tweet", StringComparison.Ordinal))
+            return "X \uB85C\uADF8\uC778 \uB610\uB294 \uC601\uC0C1 \uD655\uC778 \uD544\uC694";
+
         if (ContainsAny(lower,
                 "instagram sent an empty media response",
                 "use --cookies-from-browser",
@@ -106,6 +109,7 @@ internal static class UserErrorFormatter
     {
         return cause switch
         {
+            "X \uB85C\uADF8\uC778 \uB610\uB294 \uC601\uC0C1 \uD655\uC778 \uD544\uC694" => "X\uC5D0\uC11C \uB85C\uADF8\uC778\uD574\uC57C \uD655\uC778\uD560 \uC218 \uC788\uB294 \uC601\uC0C1\uC77C \uC218 \uC788\uC2B5\uB2C8\uB2E4. [\uB85C\uADF8\uC778 \uD6C4 \uB2E4\uC6B4]\uC5D0\uC11C X\uC5D0 \uB85C\uADF8\uC778\uD558\uACE0 \uAC8C\uC2DC\uBB3C \uC601\uC0C1\uC774 \uC7AC\uC0DD\uB418\uB294\uC9C0 \uD655\uC778\uD574 \uC8FC\uC138\uC694.",
             "브라우저 쿠키 사용 중" => "로그인 브라우저가 쿠키 파일을 사용 중입니다. 잠시 기다린 뒤 한 번만 다시 시도해 주세요.",
             "필수 도구 실행 실패" => "FFmpeg 또는 yt-dlp를 실행하지 못했습니다. 설정의 도구 준비 상태를 확인하고 필수 도구를 다시 설치해 주세요.",
             "저장 공간 부족" => "저장할 드라이브의 남은 공간을 확보하거나 저장 위치를 다른 드라이브로 변경해 주세요.",

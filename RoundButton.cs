@@ -11,6 +11,9 @@ public class RoundButton : Button
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public int BorderRadius { get; set; } = 15;
 
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Point TextOffset { get; set; } = Point.Empty;
+
     public RoundButton()
     {
         this.DoubleBuffered = true;
@@ -40,8 +43,9 @@ public class RoundButton : Button
             }
 
             TextFormatFlags flags = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak;
-            // Use the original ClientRectangle for text to keep it centered properly
-            TextRenderer.DrawText(pevent.Graphics, this.Text, this.Font, this.ClientRectangle, this.ForeColor, flags);
+            Rectangle textBounds = this.ClientRectangle;
+            textBounds.Offset(TextOffset);
+            TextRenderer.DrawText(pevent.Graphics, this.Text, this.Font, textBounds, this.ForeColor, flags);
         }
     }
 

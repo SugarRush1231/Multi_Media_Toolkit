@@ -62,6 +62,52 @@ namespace YoutubeDownloader
             }
         }
 
+        public static void DeleteCanceledDownloadArtifacts(string outputPath, bool deleteOutputFile = true)
+        {
+            if (string.IsNullOrWhiteSpace(outputPath)) return;
+
+            var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                outputPath + ".part",
+                outputPath + ".ytdl",
+                outputPath + ".part.ytdl"
+            };
+            if (deleteOutputFile) candidates.Add(outputPath);
+
+            try
+            {
+                string? directory = Path.GetDirectoryName(outputPath);
+                string baseName = Path.GetFileNameWithoutExtension(outputPath);
+                if (!string.IsNullOrWhiteSpace(directory) &&
+                    !string.IsNullOrWhiteSpace(baseName) &&
+                    Directory.Exists(directory))
+                {
+                    foreach (string file in Directory.EnumerateFiles(directory, baseName + "*"))
+                    {
+                        string fileName = Path.GetFileName(file);
+                        if (fileName.Contains(".part", StringComparison.OrdinalIgnoreCase) ||
+                            fileName.EndsWith(".ytdl", StringComparison.OrdinalIgnoreCase))
+                        {
+                            candidates.Add(file);
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            foreach (string path in candidates)
+            {
+                DeleteFileOrDirectoryWithRetry(path);
+                ActiveFiles.TryRemove(path, out _);
+            }
+        }
+
+        public static void DeleteTemporaryPath(string path)
+        {
+            DeleteFileOrDirectoryWithRetry(path);
+            ActiveFiles.TryRemove(path, out _);
+        }
+
         public static void RegisterProcess(Process p)
         {
             if (p != null)

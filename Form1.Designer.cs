@@ -353,7 +353,8 @@ partial class Form1
         lblSubLogo.Name = "lblSubLogo";
         lblSubLogo.Size = new Size(92, 15);
         lblSubLogo.TabIndex = 1;
-        lblSubLogo.Text = "Made by 김병석";
+        lblSubLogo.Text = "";
+        lblSubLogo.Visible = false;
         // 
         // btnTabSettings
         // 
