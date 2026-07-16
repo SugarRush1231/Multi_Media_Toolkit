@@ -6565,16 +6565,8 @@ public partial class Form1 : Form
                                 updateProgress.SetIndeterminate("설치 프로그램을 실행하고 있습니다...");
                                 await Task.Delay(500);
 
-                                var startInfo = new ProcessStartInfo(tempFile)
-                                {
-                                    Arguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /LANG=korean /MERGETASKS=\"!desktopicon\"",
-                                    UseShellExecute = true
-                                };
-                                
-                                Process.Start(startInfo);
-                                
-
-                                await Task.Delay(500);
+                                LaunchUpdateInstallerAfterExit(tempFile);
+                                await Task.Delay(300);
                                 Application.Exit();
                             }
                             catch (Exception ex)
@@ -7346,6 +7338,58 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
                 .Select(item => item.candidate)
                 .FirstOrDefault() ?? normalized;
         }
+    }
+
+    private static void LaunchUpdateInstallerAfterExit(string installerPath)
+    {
+        int parentProcessId = Environment.ProcessId;
+        string launcherPath = Path.Combine(Path.GetTempPath(), $"MMT_UpdateLauncher_{Guid.NewGuid():N}.ps1");
+        string installerLogPath = Path.Combine(Path.GetTempPath(), $"MMT_Update_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+        string launcherErrorPath = installerLogPath + ".launcher-error.txt";
+
+        string launcherScript = """
+param(
+    [int]$ParentId,
+    [string]$InstallerPath,
+    [string]$LogPath,
+    [string]$LauncherErrorPath
+)
+
+try {
+    Wait-Process -Id $ParentId -ErrorAction SilentlyContinue
+    $setupArguments = @(
+        '/VERYSILENT',
+        '/SUPPRESSMSGBOXES',
+        '/NORESTART',
+        '/SP-',
+        '/LANG=korean',
+        '/CLOSEAPPLICATIONS',
+        '/FORCECLOSEAPPLICATIONS',
+        '/MERGETASKS="!desktopicon"',
+        ('/LOG="' + $LogPath + '"')
+    )
+    Start-Process -FilePath $InstallerPath -ArgumentList $setupArguments -WindowStyle Hidden
+}
+catch {
+    $_ | Out-File -LiteralPath $LauncherErrorPath -Encoding utf8
+}
+finally {
+    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+}
+""";
+
+        File.WriteAllText(launcherPath, launcherScript, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+
+        var launcherInfo = new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{launcherPath}\" -ParentId {parentProcessId} -InstallerPath \"{installerPath}\" -LogPath \"{installerLogPath}\" -LauncherErrorPath \"{launcherErrorPath}\"",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden
+        };
+
+        _ = Process.Start(launcherInfo) ?? throw new InvalidOperationException("업데이트 설치 실행기를 시작하지 못했습니다.");
     }
 
     private string GetBestCapturedMediaUrl(string preferredMediaId = "")
