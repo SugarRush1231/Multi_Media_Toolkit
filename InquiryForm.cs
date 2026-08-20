@@ -11,7 +11,7 @@ internal sealed class InquiryForm : Form
     private readonly Label _countLabel;
     private readonly Label _validationLabel;
 
-    public InquiryForm()
+    public InquiryForm(string initialTitle = "", string initialMessage = "")
     {
         Text = "문의하기";
         ClientSize = new Size(520, 396);
@@ -48,6 +48,7 @@ internal sealed class InquiryForm : Form
             PlaceholderText = "문의 제목을 입력하세요.",
             MaxLength = 100
         };
+        _titleTextBox.Text = initialTitle;
         Controls.Add(_titleTextBox);
 
         Controls.Add(CreateFieldLabel("문의 내용", 154));
@@ -62,6 +63,7 @@ internal sealed class InquiryForm : Form
             AcceptsReturn = true,
             PlaceholderText = "문의 내용을 입력하세요."
         };
+        _messageTextBox.Text = initialMessage;
         _messageTextBox.TextChanged += (s, e) => UpdateCount();
         Controls.Add(_messageTextBox);
 
@@ -92,7 +94,12 @@ internal sealed class InquiryForm : Form
 
         AcceptButton = sendButton;
         CancelButton = cancelButton;
-        Shown += (s, e) => _titleTextBox.Focus();
+        Shown += (s, e) =>
+        {
+            TextBox target = string.IsNullOrWhiteSpace(_titleTextBox.Text) ? _titleTextBox : _messageTextBox;
+            target.Focus();
+            target.SelectionStart = target.TextLength;
+        };
     }
 
     public string InquiryTitle => _titleTextBox.Text.Trim();

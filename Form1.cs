@@ -100,6 +100,15 @@ public partial class Form1 : Form
     {
         "chrome", "msedge", "firefox", "brave", "whale", "opera", "opera_gx", "vivaldi", "iexplore"
     };
+    private static readonly string[][] LoginCookieDomainGroups =
+    {
+        new[] { "youtube.com", "youtube-nocookie.com", "youtu.be", "google.com", "googlevideo.com" },
+        new[] { "x.com", "twitter.com", "twimg.com" },
+        new[] { "instagram.com", "cdninstagram.com", "fbcdn.net", "threads.com", "threads.net" },
+        new[] { "kuaishou.com", "kwimgs.com", "yximgs.com", "wskwai.com" },
+        new[] { "naver.com", "pstatic.net" },
+        new[] { "sooplive.com", "sooplive.co.kr", "afreecatv.com" }
+    };
     private bool _loginKeepNoticeShown;
     private bool _initializingKeepLoginCheckbox;
     private bool _ytDlpForceUpdateChecked;
@@ -112,12 +121,14 @@ public partial class Form1 : Form
     private CancellationTokenSource? _ytDlpCts;
     private int _lastWidth = 800;
     private int _lastHeight = 600;
-    private const string CURR_VERSION = "1.3.3";
+    private const string CURR_VERSION = "1.3.4";
 
     // [Twitter/X Private Extraction] Captured Data
     private string _capturedM3u8Url = "";
     private readonly object _capturedMediaLock = new object();
     private readonly List<string> _capturedMediaUrls = new List<string>();
+    private readonly HashSet<string> _pendingAnilifeMediaRequestIds = new(StringComparer.Ordinal);
+    private string _capturedAnilifeManifestUrl = "";
     private string _capturedXStatusId = "";
     private int _genericMediaCaptureDepth;
     private string _capturedAuthToken = "";
@@ -286,6 +297,7 @@ public partial class Form1 : Form
 
         InitializeComponent();
         SettingsManager.Load();
+        CleanupManager.DeleteStaleCookieExports();
         ConfigureUpdatedAppForeground();
         if (SettingsManager.Settings.EnableWidgetMode)
         {
@@ -445,7 +457,7 @@ public partial class Form1 : Form
         btnOpenYoutubeFolder.Text = "폴더 열기";
 
         lblYtDlpTitle.Text = "웹 사이트 영상 다운로드";
-        lblYtDlpDesc.Text = "치지직, Instagram, TikTok, SOOP, Pinterest, X, Vimeo, Anilife, Linkkf 등 다양한 사이트를 지원합니다.\n로그인이 필요한 회원전용/나이제한 영상은 로그인 후 좌측 상단 즉시 다운로드 또는 URL 입력으로 받을 수 있습니다. YouTube 일부공개 영상은 URL만 있으면 유튜브 다운로더에서 받을 수 있습니다.";
+        lblYtDlpDesc.Text = "치지직, Instagram, Threads, TikTok, Kuaishou, SOOP, Pinterest, X, Vimeo, Anilife, Linkkf 등 다양한 사이트를 지원합니다.\n로그인이 필요한 회원전용/나이제한 영상은 로그인 후 좌측 상단 즉시 다운로드 또는 URL 입력으로 받을 수 있습니다. YouTube 일부공개 영상은 URL만 있으면 유튜브 다운로더에서 받을 수 있습니다.";
         txtYtDlpUrl.PlaceholderText = "다운로드할 영상의 URL을 입력하세요...";
         chkYtDlpDownloadSubtitles.Text = "자막도 함께 다운로드";
         btnYtDlpRun.Text = _isYtDlpQueueRunning ? YtDlpQueueButtonText : YtDlpStartButtonText;
@@ -581,7 +593,12 @@ public partial class Form1 : Form
 
         if (SettingsManager.Settings.AutoUpdateCheck)
         {
-            _ = CheckForUpdateAsync(false);
+            Shown += async (s, e) =>
+            {
+                await Task.Delay(1000);
+                if (!IsDisposed && !Disposing)
+                    await CheckForUpdateAsync(false);
+            };
         }
         
 
@@ -699,7 +716,7 @@ public partial class Form1 : Form
     private void ConfigureLoginDownloadHelp()
     {
         btnYtDlpLoginBrowser.Text = "\uB85C\uADF8\uC778 \uD6C4 \uB2E4\uC6B4";
-        lblYtDlpDesc.Text = "치지직, Instagram, TikTok, SOOP, Pinterest, X, Vimeo, Anilife, Linkkf 등 다양한 사이트를 지원합니다.\n로그인이 필요한 회원전용/나이제한 영상은 로그인 후 좌측 상단 즉시 다운로드 또는 URL 입력으로 받을 수 있습니다. YouTube 일부공개 영상은 URL만 있으면 유튜브 다운로더에서 받을 수 있습니다.";
+        lblYtDlpDesc.Text = "치지직, Instagram, Threads, TikTok, Kuaishou, SOOP, Pinterest, X, Vimeo, Anilife, Linkkf 등 다양한 사이트를 지원합니다.\n로그인이 필요한 회원전용/나이제한 영상은 로그인 후 좌측 상단 즉시 다운로드 또는 URL 입력으로 받을 수 있습니다. YouTube 일부공개 영상은 URL만 있으면 유튜브 다운로더에서 받을 수 있습니다.";
 
         btnYtDlpLoginBrowser.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         btnYtDlpLoginBrowser.Location = new Point(180, 182);
@@ -1225,18 +1242,26 @@ public partial class Form1 : Form
 
     private async void BtnInquiry_Click(object? sender, EventArgs e)
     {
+        await ShowInquiryDialogAsync();
+    }
+
+    private async Task ShowInquiryDialogAsync(string initialTitle = "", string initialMessage = "")
+    {
         if (DateTime.Now - _lastInquirySentAt < TimeSpan.FromSeconds(30))
         {
             ShowCenteredMessage("문의는 30초 후에 다시 보낼 수 있습니다.", "문의하기", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        using var dialog = new InquiryForm();
-        if (dialog.ShowDialog(this) != DialogResult.OK || btnInquiry == null) return;
+        using var dialog = new InquiryForm(initialTitle, initialMessage);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
-        string originalText = btnInquiry.Text;
-        btnInquiry.Enabled = false;
-        btnInquiry.Text = "전송 중...";
+        string originalText = btnInquiry?.Text ?? "문의하기";
+        if (btnInquiry != null)
+        {
+            btnInquiry.Enabled = false;
+            btnInquiry.Text = "전송 중...";
+        }
         try
         {
             bool sent = await SendInquiryAsync(dialog.InquiryTitle, dialog.Message);
@@ -1263,8 +1288,11 @@ public partial class Form1 : Form
         }
         finally
         {
-            btnInquiry.Text = originalText;
-            btnInquiry.Enabled = true;
+            if (btnInquiry != null)
+            {
+                btnInquiry.Text = originalText;
+                btnInquiry.Enabled = true;
+            }
         }
     }
 
@@ -1683,7 +1711,7 @@ public partial class Form1 : Form
 
     private static object[] GetKnownSiteNames()
     {
-        return new object[] { "YouTube", "SOOP", "Chzzk", "Instagram", "TikTok", "X", "Anilife", "Linkkf", "WebSite", "Audio" };
+        return new object[] { "YouTube", "SOOP", "Chzzk", "Instagram", "Threads", "TikTok", "Kuaishou", "X", "Anilife", "Linkkf", "WebSite", "Audio" };
     }
 
     private void ReloadDownloadRuleSettingsUI()
@@ -1930,10 +1958,12 @@ public partial class Form1 : Form
         if (lower.Contains("sooplive")) return "SOOP";
         if (lower.Contains("chzzk.naver.com") || lower.Contains("pstatic.net")) return "Chzzk";
         if (lower.Contains("instagram.com")) return "Instagram";
+        if (IsThreadsPlatformUrl(url)) return "Threads";
         if (lower.Contains("tiktok.com")) return "TikTok";
+        if (IsKuaishouPlatformUrl(url)) return "Kuaishou";
         if (IsXPlatformUrl(url)) return "X";
         if (lower.Contains("anilife") || lower.Contains("gcdn.app")) return "Anilife";
-        if (lower.Contains("linkkf")) return "Linkkf";
+        if (IsLinkkfPlatformUrl(url)) return "Linkkf";
         return "WebSite";
     }
 
@@ -1946,6 +1976,51 @@ public partial class Form1 : Form
                host.Equals("twitter.com", StringComparison.OrdinalIgnoreCase) ||
                host.EndsWith(".twitter.com", StringComparison.OrdinalIgnoreCase) ||
                host.Equals("video.twimg.com", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsThreadsPlatformUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)) return false;
+        return HostMatchesAnyDomain(uri.Host, "threads.com", "threads.net");
+    }
+
+    private static bool IsThreadsPostUrl(string url)
+    {
+        if (!IsThreadsPlatformUrl(url) || !Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)) return false;
+        return System.Text.RegularExpressions.Regex.IsMatch(
+            uri.AbsolutePath,
+            @"/@[^/]+/post/[^/?#]+",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+
+    private static bool IsKuaishouPlatformUrl(string url)
+    {
+        return Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) &&
+               HostMatchesAnyDomain(uri.Host, "kuaishou.com");
+    }
+
+    private static bool IsKuaishouShortVideoUrl(string url)
+    {
+        return IsKuaishouPlatformUrl(url) &&
+               Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) &&
+               System.Text.RegularExpressions.Regex.IsMatch(
+                   uri.AbsolutePath,
+                   @"^/short-video/[^/?#]+",
+                   System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+
+    private static bool IsLinkkfPlatformUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)) return false;
+        string host = uri.Host;
+        return host.Equals("linkkf.drewpx.xyz", StringComparison.OrdinalIgnoreCase) ||
+               host.Equals("linkkf.tckopke.com", StringComparison.OrdinalIgnoreCase) ||
+               host.Equals("kf.carsstore365.com", StringComparison.OrdinalIgnoreCase) ||
+               host.Equals("play.sub2.top", StringComparison.OrdinalIgnoreCase) ||
+               host.Equals("play.sub3.top", StringComparison.OrdinalIgnoreCase) ||
+               host.Equals("playv2.sub3.top", StringComparison.OrdinalIgnoreCase) ||
+               host.Equals("hlz3.top", StringComparison.OrdinalIgnoreCase) ||
+               host.EndsWith(".hlz3.top", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string GetDownloadSaveDirectory(string url, bool audioOnly)
@@ -2721,6 +2796,7 @@ public partial class Form1 : Form
                lower.Contains("manifest") ||
                lower.Contains("object reference not set") ||
                lower.Contains("video is unavailable") ||
+               lower.Contains(" is not available") ||
                lower.Contains("sign in to confirm your age") ||
                lower.Contains("requested format is not available") ||
                lower.Contains("no video formats");
@@ -3471,8 +3547,30 @@ public partial class Form1 : Form
 
     private static bool IsHttpUrl(string value)
     {
-        return Uri.TryCreate(value, UriKind.Absolute, out var uri)
-            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+        return TryNormalizeHttpUrl(value, out _);
+    }
+
+    private static bool TryNormalizeHttpUrl(string value, out string normalizedUrl)
+    {
+        normalizedUrl = "";
+        if (string.IsNullOrWhiteSpace(value)) return false;
+
+        string candidate = value.Trim().Trim('"', '\'', ' ');
+        if (candidate.Any(char.IsControl)) return false;
+        if (IsValidYouTubeVideoId(candidate))
+        {
+            candidate = $"https://www.youtube.com/watch?v={candidate}";
+        }
+
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) ||
+            !string.IsNullOrEmpty(uri.UserInfo))
+        {
+            return false;
+        }
+
+        normalizedUrl = uri.AbsoluteUri;
+        return true;
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -3764,7 +3862,7 @@ public partial class Form1 : Form
         };
         var description = new Label
         {
-            Text = "지금 다운로드하여 설치하시겠습니까?\n설치 중 프로그램이 자동으로 종료된 후 다시 시작될 수 있습니다.",
+            Text = "지금 업데이트 파일을 다운로드하시겠습니까?\n다운로드가 끝난 뒤 설치 시점을 선택할 수 있습니다.",
             Location = new Point(28, 62),
             Size = new Size(444, 52)
         };
@@ -3776,7 +3874,7 @@ public partial class Form1 : Form
         };
         var updateButton = new Button
         {
-            Text = "업데이트",
+            Text = "다운로드",
             DialogResult = DialogResult.Yes,
             Location = new Point(252, 172),
             Size = new Size(105, 34),
@@ -3814,6 +3912,95 @@ public partial class Form1 : Form
 
         DialogResult result = dialog.ShowDialog(owner);
         return (result, skipCheckBox.Checked);
+    }
+
+    private bool ShowUpdateReadyDialog(string latestVersion)
+    {
+        if (InvokeRequired)
+        {
+            return (bool)Invoke(new Func<bool>(() => ShowUpdateReadyDialog(latestVersion)));
+        }
+
+        bool useWidgetOwner = _downloadWidgetForm != null &&
+                              !_downloadWidgetForm.IsDisposed &&
+                              _downloadWidgetForm.Visible &&
+                              !Visible;
+        IWin32Window owner = useWidgetOwner ? _downloadWidgetForm! : this;
+        Rectangle ownerBounds = useWidgetOwner
+            ? Screen.FromControl(_downloadWidgetForm!).WorkingArea
+            : WindowState == FormWindowState.Maximized
+                ? Screen.FromControl(this).WorkingArea
+                : WindowState == FormWindowState.Minimized ? RestoreBounds : Bounds;
+
+        if (ownerBounds.Width <= 0 || ownerBounds.Height <= 0)
+            ownerBounds = Screen.FromControl(useWidgetOwner ? _downloadWidgetForm! : this).WorkingArea;
+
+        using var dialog = new Form
+        {
+            Text = "업데이트 다운로드 완료",
+            ClientSize = new Size(520, 205),
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            BackColor = Color.White,
+            Font = Font,
+            TopMost = useWidgetOwner
+        };
+
+        var title = new Label
+        {
+            Text = $"v{latestVersion} 설치 파일이 준비되었습니다.",
+            Location = new Point(28, 26),
+            Size = new Size(464, 30),
+            Font = new Font(Font, FontStyle.Bold)
+        };
+        var description = new Label
+        {
+            Text = "설치하고 다시 시작을 누르면 프로그램이 종료된 후 업데이트됩니다.\n진행 중인 다운로드가 있다면 먼저 완료해 주세요.",
+            Location = new Point(28, 66),
+            Size = new Size(464, 52)
+        };
+        var installButton = new Button
+        {
+            Text = "설치하고 다시 시작",
+            DialogResult = DialogResult.Yes,
+            Location = new Point(235, 150),
+            Size = new Size(155, 36),
+            BackColor = Color.FromArgb(14, 149, 220),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        installButton.FlatAppearance.BorderSize = 0;
+
+        var laterButton = new Button
+        {
+            Text = "나중에",
+            DialogResult = DialogResult.No,
+            Location = new Point(400, 150),
+            Size = new Size(92, 36),
+            BackColor = Color.FromArgb(230, 235, 241),
+            ForeColor = Color.FromArgb(35, 48, 65),
+            FlatStyle = FlatStyle.Flat
+        };
+        laterButton.FlatAppearance.BorderSize = 0;
+
+        dialog.Controls.AddRange(new Control[] { title, description, installButton, laterButton });
+        dialog.AcceptButton = installButton;
+        dialog.CancelButton = laterButton;
+        dialog.Shown += (_, _) =>
+        {
+            int x = ownerBounds.Left + (ownerBounds.Width - dialog.Width) / 2;
+            int y = ownerBounds.Top + (ownerBounds.Height - dialog.Height) / 2;
+            Rectangle workingArea = Screen.FromRectangle(ownerBounds).WorkingArea;
+            dialog.Location = new Point(
+                Math.Max(workingArea.Left, Math.Min(x, workingArea.Right - dialog.Width)),
+                Math.Max(workingArea.Top, Math.Min(y, workingArea.Bottom - dialog.Height)));
+            dialog.Activate();
+        };
+
+        return dialog.ShowDialog(owner) == DialogResult.Yes;
     }
 
     private static IntPtr CenterMessageBoxHook(int nCode, IntPtr wParam, IntPtr lParam)
@@ -3875,8 +4062,11 @@ public partial class Form1 : Form
         string lower = FlattenExceptionMessage(ex).ToLowerInvariant();
         bool xVideoMayRequireLogin = IsXPlatformUrl(url) &&
             lower.Contains("no video could be found in this tweet");
+        bool kuaishouVerificationRequired = IsKuaishouPlatformUrl(url) &&
+            (lower.Contains("kuaishou") || lower.Contains("콰이쇼우") || lower.Contains("보안 확인"));
 
         return xVideoMayRequireLogin ||
+               kuaishouVerificationRequired ||
                lower.Contains("instagram sent an empty media response") ||
                lower.Contains("use --cookies-from-browser") ||
                lower.Contains("use --cookies for the authentication") ||
@@ -3893,12 +4083,20 @@ public partial class Form1 : Form
     {
         string lower = url.ToLowerInvariant();
         if (lower.Contains("instagram.com")) return "Instagram";
+        if (IsThreadsPlatformUrl(url)) return "Threads";
         if (lower.Contains("tiktok.com")) return "TikTok";
+        if (IsKuaishouPlatformUrl(url)) return "콰이쇼우";
         if (lower.Contains("youtube.com") || lower.Contains("youtu.be")) return "YouTube";
         if (lower.Contains("chzzk.naver.com")) return "치지직";
         if (lower.Contains("sooplive") || lower.Contains("afreecatv.com")) return "SOOP";
         if (IsXPlatformUrl(url)) return "X";
         return "웹 브라우저";
+    }
+
+    private static bool IsInstagramPlatformUrl(string url)
+    {
+        return Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) &&
+               HostMatchesAnyDomain(uri.Host, "instagram.com", "cdninstagram.com", "fbcdn.net");
     }
 
     private async Task<bool> HandleLoginRequiredDownloadErrorAsync(string url, Exception ex, bool alreadyInLoginBrowser)
@@ -3908,6 +4106,36 @@ public partial class Form1 : Form
         string siteName = GetLoginSiteNameForUrl(url);
         if (alreadyInLoginBrowser)
         {
+            if (siteName == "콰이쇼우")
+            {
+                DialogResult inquiryResult = ShowCenteredMessage(
+                    "콰이쇼우 보안 확인을 마친 뒤 좌측 상단 [즉시 다운로드]를 다시 눌러 주세요.\n대부분 영상이 표시되지만, 간혹 영상이 보이지 않아도 다운로드는 가능할 수 있습니다.\n\n이미 보안 확인을 완료했는데도 계속 실패한다면 제작자에게 문의하시겠습니까?",
+                    "콰이쇼우 다운로드 확인",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Information);
+                if (inquiryResult == DialogResult.Yes)
+                {
+                    await ShowInquiryDialogAsync(
+                        "콰이쇼우 다운로드 문제",
+                        $"영상 주소: {url}\r\n\r\n보안 확인을 완료했지만 다운로드되지 않습니다.\r\n추가로 확인한 내용을 적어 주세요.");
+                }
+                return true;
+            }
+
+            if (siteName == "Instagram")
+            {
+                DialogResult retryLogin = ShowCenteredMessage(
+                    "프로그램 내부 Instagram 로그인 쿠키를 확인하지 못했습니다.\n\nChrome이나 Edge의 로그인 정보는 이 프로그램과 별개입니다. [예]를 누르면 프로그램 내부 Instagram 로그인 화면을 다시 엽니다.",
+                    "Instagram 로그인 다시 확인",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Information);
+                if (retryLogin == DialogResult.Yes)
+                {
+                    await RestartInstagramLoginAsync(url);
+                }
+                return true;
+            }
+
             string message = siteName == "X"
                 ? "X에 로그인된 상태에서도 게시물의 영상을 찾지 못했습니다.\n\n브라우저에서 해당 영상이 실제로 재생되는지 확인해 주세요. 삭제됐거나 영상이 없는 게시물은 다운로드할 수 없습니다."
                 : $"{siteName} 로그인 또는 시청 권한을 확인해 주세요.\n\n브라우저에서 해당 영상이 정상 재생되는지 확인한 뒤 다시 다운로드해 주세요.";
@@ -3916,6 +4144,12 @@ public partial class Form1 : Form
                 "로그인 확인 필요",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
+            return true;
+        }
+
+        if (siteName == "콰이쇼우")
+        {
+            await ShowKuaishouSecurityVerificationAsync(url);
             return true;
         }
 
@@ -3938,6 +4172,56 @@ public partial class Form1 : Form
         }
 
         return true;
+    }
+
+    private async Task ShowKuaishouSecurityVerificationAsync(string url)
+    {
+        DialogResult verificationResult = ShowCenteredMessage(
+            "콰이쇼우가 자동 접근을 제한하여 보안 확인이 필요합니다.\n\n[확인]을 누르면 프로그램 내부 콰이쇼우 페이지가 열립니다.\n1. 화면에 표시되는 보안 검사를 완료하세요.\n2. 영상 페이지에서 좌측 상단 [즉시 다운로드]를 누르세요.\n\n대부분 영상이 표시되지만, 간혹 영상이 보이지 않아도 다운로드는 가능할 수 있습니다.",
+            "콰이쇼우 보안 확인",
+            MessageBoxButtons.OKCancel,
+            MessageBoxIcon.Information);
+        if (verificationResult == DialogResult.OK)
+        {
+            await OpenLoginDownloadForUrlAsync("콰이쇼우", url);
+        }
+    }
+
+    private async Task<string> DownloadWithKuaishouRetryAsync(
+        YtDlpDownloader downloader,
+        string url,
+        string savePath,
+        string browser,
+        CancellationToken token,
+        string cookieFile,
+        Dictionary<string, string>? customHeaders,
+        Action beforeRetry)
+    {
+        if (!IsKuaishouShortVideoUrl(url))
+        {
+            return await downloader.DownloadVideoAsync(url, savePath, browser, token, cookieFile, customHeaders);
+        }
+
+        try
+        {
+            return await downloader.DownloadVideoAsync(url, savePath, browser, token, cookieFile, customHeaders);
+        }
+        catch (Exception) when (!token.IsCancellationRequested)
+        {
+            beforeRetry();
+            await Task.Delay(350, token);
+        }
+
+        try
+        {
+            return await downloader.DownloadVideoAsync(url, savePath, browser, token, cookieFile, customHeaders);
+        }
+        catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
+        {
+            throw new Exception(
+                "콰이쇼우 보안 확인이 필요합니다. 프로그램 내부 브라우저에서 보안 검사를 완료한 뒤 다시 시도해 주세요.",
+                ex);
+        }
     }
 
     private async Task OpenLoginDownloadForUrlAsync(string siteName, string url)
@@ -3964,9 +4248,27 @@ public partial class Form1 : Form
 
         await ShowLoginBrowserAsync(siteName, url);
         if (lblXGuide != null)
-            lblXGuide.Text = $"{siteName}에 로그인한 뒤 영상이 재생되면 좌측 상단 즉시 다운로드를 눌러주세요.";
+            lblXGuide.Text = siteName == "콰이쇼우"
+                ? "보안 검사를 완료한 뒤 좌측 상단 즉시 다운로드를 눌러주세요. 간혹 영상이 보이지 않아도 다운로드는 가능할 수 있습니다."
+                : $"{siteName}에 로그인한 뒤 영상이 재생되면 좌측 상단 즉시 다운로드를 눌러주세요.";
         if (lblXStatus != null)
-            lblXStatus.Text = "로그인 후 영상을 확인해 주세요.";
+            lblXStatus.Text = siteName == "콰이쇼우"
+                ? "보안 확인 후 즉시 다운로드를 눌러주세요."
+                : "로그인 후 영상을 확인해 주세요.";
+    }
+
+    private async Task RestartInstagramLoginAsync(string url)
+    {
+        txtYtDlpUrl.Text = url;
+        _isInstaLoggedIn = false;
+        if (tglInstaPrivateMode.Checked)
+        {
+            tglInstaPrivateMode.Checked = false;
+            await ClearInstagramCookiesAsync();
+            await Task.Delay(100);
+        }
+
+        tglInstaPrivateMode.Checked = true;
     }
 
     private static string GetDownloadFailureHint(string cause)
@@ -4193,9 +4495,9 @@ public partial class Form1 : Form
             outputPath = Path.Combine(saveDirectory, $"{baseFileName}.{ext}");
             
             // To avoid overwrite, add numbers to filename if exists
-            int count = 1;
+            int count = 2;
             while(File.Exists(outputPath)) {
-                outputPath = Path.Combine(saveDirectory, $"{baseFileName} ({count}).{ext}");
+                outputPath = Path.Combine(saveDirectory, $"{baseFileName}_{count}.{ext}");
                 count++;
             }
         }
@@ -4278,6 +4580,13 @@ public partial class Form1 : Form
         string sourceFeature = "웹사이트 영상 다운")
     {
         rejectReason = "";
+        if (!TryNormalizeHttpUrl(url, out url))
+        {
+            rejectReason = "http:// 또는 https://로 시작하는 올바른 영상 주소를 입력해 주세요.";
+            lblYtDlpStatus.Text = rejectReason;
+            return false;
+        }
+
         url = NormalizeYouTubeSingleVideoUrl(url);
         if (LooksLikeYouTubeInput(url) && !IsYouTubeSingleVideoInput(url))
         {
@@ -4493,13 +4802,19 @@ public partial class Form1 : Form
                 try
                 {
                     string capturedUrl = "";
+                    string anilifeResolveDiagnostic = "";
+                    bool anilifePageApiAttempted = false;
                     bool isAnilife = targetUrl.Contains("anilife.app", StringComparison.OrdinalIgnoreCase);
                     bool isXStatusTarget = IsXStatusPageUrl(targetUrl);
+                    bool isThreads = IsThreadsPostUrl(targetUrl);
+                    bool isKuaishou = IsKuaishouShortVideoUrl(targetUrl);
                     bool needsBrowserCapture = isAnilife ||
+                        isThreads ||
+                        isKuaishou ||
                         targetUrl.Contains("chzzk.naver.com", StringComparison.OrdinalIgnoreCase) ||
                         targetUrl.Contains("sooplive", StringComparison.OrdinalIgnoreCase) ||
-                        targetUrl.Contains("linkkf.drewpx.xyz", StringComparison.OrdinalIgnoreCase);
-                    genericCaptureEnabled = !needsBrowserCapture;
+                        IsLinkkfPlatformUrl(targetUrl);
+                    genericCaptureEnabled = isKuaishou || !needsBrowserCapture;
                     if (genericCaptureEnabled) Interlocked.Increment(ref _genericMediaCaptureDepth);
                     try
                     {
@@ -4526,14 +4841,14 @@ public partial class Form1 : Form
                                 {
                                     if (webViewX.CoreWebView2 != null)
                                     {
-                                        await webViewX.CoreWebView2.ExecuteScriptAsync("window.dispatchEvent(new Event('mousemove')); window.dispatchEvent(new Event('scroll')); document.querySelector('video')?.load?.();");
+                                        await webViewX.CoreWebView2.ExecuteScriptAsync("window.dispatchEvent(new Event('mousemove')); window.dispatchEvent(new Event('scroll')); const video = document.querySelector('video'); if (video) { video.muted = true; video.play().catch(() => {}); }");
                                     }
                                 }
                                 catch { }
                             }));
                         }
 
-                        if (!needsBrowserCapture && i == 6)
+                        if ((!needsBrowserCapture || isKuaishou) && i == 6)
                         {
                             this.Invoke((MethodInvoker)(async () =>
                             {
@@ -4559,12 +4874,57 @@ public partial class Form1 : Form
                             }));
                         }
 
-                        string bestCapturedUrl = GetBestCapturedMediaUrl();
+                        string bestCapturedUrl = isThreads || isKuaishou ? "" : GetBestCapturedMediaUrl();
+                        if (isThreads && i >= 2)
+                        {
+                            var threadsMedia = await TryReadThreadsMediaFromWebViewAsync();
+                            bestCapturedUrl = threadsMedia.Url;
+                            if (!string.IsNullOrWhiteSpace(threadsMedia.Title))
+                                downloader.PreferredTitle = threadsMedia.Title;
+                            if (!string.IsNullOrWhiteSpace(bestCapturedUrl))
+                                RememberCapturedMediaUrl(bestCapturedUrl);
+                        }
+                        if (isKuaishou && i >= 2)
+                        {
+                            var kuaishouMedia = await TryReadKuaishouMediaFromWebViewAsync();
+                            bestCapturedUrl = kuaishouMedia.Url;
+                            if (!string.IsNullOrWhiteSpace(kuaishouMedia.Title))
+                                downloader.PreferredTitle = kuaishouMedia.Title;
+                            if (string.IsNullOrWhiteSpace(bestCapturedUrl))
+                                bestCapturedUrl = GetBestCapturedMediaUrl();
+                            if (!string.IsNullOrWhiteSpace(bestCapturedUrl))
+                                RememberCapturedMediaUrl(bestCapturedUrl);
+                        }
+                        if (isAnilife && !IsAnilifeManifestCaptureUrl(bestCapturedUrl)) bestCapturedUrl = "";
+                        if (isAnilife && string.IsNullOrWhiteSpace(bestCapturedUrl) && i >= 4 && i % 4 == 0)
+                        {
+                            bestCapturedUrl = await TryReadAnilifeManifestFromWebViewAsync();
+                            if (!string.IsNullOrWhiteSpace(bestCapturedUrl)) RememberCapturedMediaUrl(bestCapturedUrl);
+                        }
+                        if (isAnilife && string.IsNullOrWhiteSpace(bestCapturedUrl) && !anilifePageApiAttempted && i >= 12)
+                        {
+                            anilifePageApiAttempted = true;
+                            var pageApiResult = await TryResolveAnilifeManifestViaPageApiAsync(targetUrl);
+                            bestCapturedUrl = pageApiResult.Url;
+                            anilifeResolveDiagnostic = pageApiResult.Diagnostic;
+                            if (!string.IsNullOrWhiteSpace(bestCapturedUrl)) RememberCapturedMediaUrl(bestCapturedUrl);
+                        }
                         if (!string.IsNullOrEmpty(bestCapturedUrl) && (needsBrowserCapture || i >= 8))
                         {
                             capturedUrl = bestCapturedUrl;
                             break;
                         }
+                    }
+
+                    if (isAnilife && !string.IsNullOrWhiteSpace(capturedUrl) && string.IsNullOrWhiteSpace(downloader.PreferredTitle))
+                    {
+                        string pageTitle = await TryReadAnilifePageTitleFromWebViewAsync();
+                        if (!string.IsNullOrWhiteSpace(pageTitle)) downloader.PreferredTitle = pageTitle;
+                    }
+
+                    if (isAnilife && string.IsNullOrWhiteSpace(capturedUrl) && !string.IsNullOrWhiteSpace(anilifeResolveDiagnostic))
+                    {
+                        throw new Exception($"애니라이프 재생 정보를 가져오지 못했습니다.\n{anilifeResolveDiagnostic}");
                     }
 
                     this.Invoke((MethodInvoker)(() =>
@@ -4619,6 +4979,13 @@ public partial class Form1 : Form
 
                     string exportedCookieFile = await ExportWebViewCookiesAsync(url);
 
+                    if (job.UseInstaPrivateMode && IsInstagramPlatformUrl(url) &&
+                        (string.IsNullOrEmpty(exportedCookieFile) || !CookieFileContainsCookie(exportedCookieFile, "sessionid")))
+                    {
+                        _isInstaLoggedIn = false;
+                        throw new Exception("Instagram 로그인 세션을 확인하지 못했습니다. 프로그램 내부 Instagram 로그인 화면에서 홈 화면이 표시될 때까지 기다린 뒤 다시 시도해 주세요.");
+                    }
+
                     if (string.IsNullOrEmpty(exportedCookieFile) && (job.UseXPrivateMode || job.UseInstaPrivateMode))
                     {
                         throw new Exception("브라우저에서 로그인 정보를 찾을 수 없습니다. 먼저 로그인 후 다운 화면에서 로그인을 완료해 주세요.");
@@ -4636,14 +5003,10 @@ public partial class Form1 : Form
                     bool isYouTubeLoginDownload = LooksLikeYouTubeInput(url);
                     if (!isYouTubeLoginDownload)
                     {
-                        if (!string.IsNullOrEmpty(_capturedAuthToken)) customHeaders["authorization"] = _capturedAuthToken;
-                        if (!string.IsNullOrEmpty(_capturedCsrfToken)) customHeaders["x-csrf-token"] = _capturedCsrfToken;
+                        bool isXAuthenticationTarget = IsXPlatformUrl(url) || IsXDirectMediaUrl(url);
+                        if (isXAuthenticationTarget && !string.IsNullOrEmpty(_capturedAuthToken)) customHeaders["authorization"] = _capturedAuthToken;
+                        if (isXAuthenticationTarget && !string.IsNullOrEmpty(_capturedCsrfToken)) customHeaders["x-csrf-token"] = _capturedCsrfToken;
                         if (!string.IsNullOrEmpty(_capturedUserAgent)) customHeaders["User-Agent"] = _capturedUserAgent;
-                        if (string.IsNullOrEmpty(cookieFile))
-                        {
-                            string cookieHeader = await BuildWebViewCookieHeaderAsync();
-                            if (!string.IsNullOrWhiteSpace(cookieHeader)) customHeaders["Cookie"] = cookieHeader;
-                        }
                     }
                 }
                 finally
@@ -4652,7 +5015,19 @@ public partial class Form1 : Form
                 }
             }
 
-            string finalFilePath = await downloader.DownloadVideoAsync(url, job.SavePath, browser, job.JobCts.Token, cookieFile, customHeaders);
+            string finalFilePath = await DownloadWithKuaishouRetryAsync(
+                downloader,
+                url,
+                job.SavePath,
+                browser,
+                job.JobCts.Token,
+                cookieFile,
+                customHeaders,
+                () =>
+                {
+                    UpdateYtDlpJobStatus(job, "연결 다시 확인 중...");
+                    lblYtDlpStatus.Text = "콰이쇼우 연결을 다시 확인하고 있습니다...";
+                });
 
             UpdateYtDlpJobStatus(job, downloader.LastSubtitleDownloaded ? "완료 + 자막" : "완료");
             Notify("다운로드 완료", "웹사이트 영상 다운로드가 완료되었습니다.");
@@ -4685,10 +5060,12 @@ public partial class Form1 : Form
             else if (lowerUrlSuccess.Contains("chzzk")) platformSuccess = "치지직";
             else if (lowerUrlSuccess.Contains("soop") || lowerUrlSuccess.Contains("afreeca")) platformSuccess = "SOOP";
             else if (lowerUrlSuccess.Contains("instagram")) platformSuccess = "Instagram";
+            else if (IsThreadsPlatformUrl(url)) platformSuccess = "Threads";
             else if (lowerUrlSuccess.Contains("tiktok")) platformSuccess = "TikTok";
+            else if (IsKuaishouPlatformUrl(url)) platformSuccess = "Kuaishou";
             else if (lowerUrlSuccess.Contains("pinterest")) platformSuccess = "Pinterest";
             else if (lowerUrlSuccess.Contains("anilife")) platformSuccess = "Anilife";
-            else if (lowerUrlSuccess.Contains("linkkf")) platformSuccess = "Linkkf";
+            else if (IsLinkkfPlatformUrl(url)) platformSuccess = "Linkkf";
             else if (lowerUrlSuccess.Contains("youtube") || lowerUrlSuccess.Contains("youtu.be")) platformSuccess = "YouTube(범용)";
 
             LogDownload(BuildDownloadHistoryEntry(platformSuccess, job.PreferredTitle, finalFilePath));
@@ -4794,15 +5171,21 @@ public partial class Form1 : Form
         string url = txtYtDlpUrl.Text.Trim();
         if (!_isInternalYtDlpRun)
         {
-            if (!string.IsNullOrEmpty(url) && LooksLikeYouTubeInput(url) && !_isLoginBrowserMode)
-            {
-                await RouteToYoutubeDownloadAsync(url);
-                return;
-            }
-
             if (string.IsNullOrEmpty(url))
             {
                 ShowCenteredMessage("다운로드할 URL을 입력해 주세요.", "알림", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (!TryNormalizeHttpUrl(url, out url))
+            {
+                ShowCenteredMessage("http:// 또는 https://로 시작하는 올바른 영상 주소를 입력해 주세요.", "주소 확인", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(url) && LooksLikeYouTubeInput(url) && !_isLoginBrowserMode)
+            {
+                await RouteToYoutubeDownloadAsync(url);
                 return;
             }
 
@@ -4810,14 +5193,21 @@ public partial class Form1 : Form
             return;
         }
 
-        if (!string.IsNullOrEmpty(url) && LooksLikeYouTubeInput(url) && !_isLoginBrowserMode)
-        {
-            await RouteToYoutubeDownloadAsync(url);
-            return;
-        }
         if (string.IsNullOrEmpty(url))
         {
             ShowCenteredMessage("다운로드할 URL을 입력해 주세요.", "알림", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (!TryNormalizeHttpUrl(url, out url))
+        {
+            ShowCenteredMessage("http:// 또는 https://로 시작하는 올바른 영상 주소를 입력해 주세요.", "주소 확인", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(url) && LooksLikeYouTubeInput(url) && !_isLoginBrowserMode)
+        {
+            await RouteToYoutubeDownloadAsync(url);
             return;
         }
 
@@ -4879,13 +5269,19 @@ public partial class Form1 : Form
                 try
                 {
                     string capturedUrl = "";
+                    string anilifeResolveDiagnostic = "";
+                    bool anilifePageApiAttempted = false;
                     bool isAnilife = targetUrl.Contains("anilife.app", StringComparison.OrdinalIgnoreCase);
                     bool isXStatusTarget = IsXStatusPageUrl(targetUrl);
+                    bool isThreads = IsThreadsPostUrl(targetUrl);
+                    bool isKuaishou = IsKuaishouShortVideoUrl(targetUrl);
                     bool needsBrowserCapture = isAnilife ||
+                        isThreads ||
+                        isKuaishou ||
                         targetUrl.Contains("chzzk.naver.com", StringComparison.OrdinalIgnoreCase) ||
                         targetUrl.Contains("sooplive", StringComparison.OrdinalIgnoreCase) ||
-                        targetUrl.Contains("linkkf.drewpx.xyz", StringComparison.OrdinalIgnoreCase);
-                    genericCaptureEnabled = !needsBrowserCapture;
+                        IsLinkkfPlatformUrl(targetUrl);
+                    genericCaptureEnabled = isKuaishou || !needsBrowserCapture;
                     if (genericCaptureEnabled) Interlocked.Increment(ref _genericMediaCaptureDepth);
                     try
                     {
@@ -4911,13 +5307,13 @@ public partial class Form1 : Form
                                 {
                                     if (webViewX.CoreWebView2 != null)
                                     {
-                                        await webViewX.CoreWebView2.ExecuteScriptAsync("window.dispatchEvent(new Event('mousemove')); window.dispatchEvent(new Event('scroll')); document.querySelector('video')?.load?.();");
+                                        await webViewX.CoreWebView2.ExecuteScriptAsync("window.dispatchEvent(new Event('mousemove')); window.dispatchEvent(new Event('scroll')); const video = document.querySelector('video'); if (video) { video.muted = true; video.play().catch(() => {}); }");
                                     }
                                 }
                                 catch { }
                             }));
                         }
-                        if (!needsBrowserCapture && i == 6)
+                        if ((!needsBrowserCapture || isKuaishou) && i == 6)
                         {
                             this.Invoke((MethodInvoker)(async () =>
                             {
@@ -4943,12 +5339,57 @@ public partial class Form1 : Form
                             }));
                         }
 
-                        string bestCapturedUrl = GetBestCapturedMediaUrl();
+                        string bestCapturedUrl = isThreads || isKuaishou ? "" : GetBestCapturedMediaUrl();
+                        if (isThreads && i >= 2)
+                        {
+                            var threadsMedia = await TryReadThreadsMediaFromWebViewAsync();
+                            bestCapturedUrl = threadsMedia.Url;
+                            if (!string.IsNullOrWhiteSpace(threadsMedia.Title))
+                                downloader.PreferredTitle = threadsMedia.Title;
+                            if (!string.IsNullOrWhiteSpace(bestCapturedUrl))
+                                RememberCapturedMediaUrl(bestCapturedUrl);
+                        }
+                        if (isKuaishou && i >= 2)
+                        {
+                            var kuaishouMedia = await TryReadKuaishouMediaFromWebViewAsync();
+                            bestCapturedUrl = kuaishouMedia.Url;
+                            if (!string.IsNullOrWhiteSpace(kuaishouMedia.Title))
+                                downloader.PreferredTitle = kuaishouMedia.Title;
+                            if (string.IsNullOrWhiteSpace(bestCapturedUrl))
+                                bestCapturedUrl = GetBestCapturedMediaUrl();
+                            if (!string.IsNullOrWhiteSpace(bestCapturedUrl))
+                                RememberCapturedMediaUrl(bestCapturedUrl);
+                        }
+                        if (isAnilife && !IsAnilifeManifestCaptureUrl(bestCapturedUrl)) bestCapturedUrl = "";
+                        if (isAnilife && string.IsNullOrWhiteSpace(bestCapturedUrl) && i >= 4 && i % 4 == 0)
+                        {
+                            bestCapturedUrl = await TryReadAnilifeManifestFromWebViewAsync();
+                            if (!string.IsNullOrWhiteSpace(bestCapturedUrl)) RememberCapturedMediaUrl(bestCapturedUrl);
+                        }
+                        if (isAnilife && string.IsNullOrWhiteSpace(bestCapturedUrl) && !anilifePageApiAttempted && i >= 12)
+                        {
+                            anilifePageApiAttempted = true;
+                            var pageApiResult = await TryResolveAnilifeManifestViaPageApiAsync(targetUrl);
+                            bestCapturedUrl = pageApiResult.Url;
+                            anilifeResolveDiagnostic = pageApiResult.Diagnostic;
+                            if (!string.IsNullOrWhiteSpace(bestCapturedUrl)) RememberCapturedMediaUrl(bestCapturedUrl);
+                        }
                         if (!string.IsNullOrEmpty(bestCapturedUrl) && (needsBrowserCapture || i >= 8))
                         {
                             capturedUrl = bestCapturedUrl;
                             break;
                         }
+                    }
+
+                    if (isAnilife && !string.IsNullOrWhiteSpace(capturedUrl) && string.IsNullOrWhiteSpace(downloader.PreferredTitle))
+                    {
+                        string pageTitle = await TryReadAnilifePageTitleFromWebViewAsync();
+                        if (!string.IsNullOrWhiteSpace(pageTitle)) downloader.PreferredTitle = pageTitle;
+                    }
+
+                    if (isAnilife && string.IsNullOrWhiteSpace(capturedUrl) && !string.IsNullOrWhiteSpace(anilifeResolveDiagnostic))
+                    {
+                        throw new Exception($"애니라이프 재생 정보를 가져오지 못했습니다.\n{anilifeResolveDiagnostic}");
                     }
 
                     this.Invoke((MethodInvoker)(() =>
@@ -5006,6 +5447,13 @@ public partial class Form1 : Form
                     await EnsureLoginWebViewProfileAsync(useXCookieProfile);
 
                     cookieFile = await ExportWebViewCookiesAsync(url);
+
+                    if (tglInstaPrivateMode.Checked && IsInstagramPlatformUrl(url) &&
+                        (string.IsNullOrEmpty(cookieFile) || !CookieFileContainsCookie(cookieFile, "sessionid")))
+                    {
+                        _isInstaLoggedIn = false;
+                        throw new Exception("Instagram 로그인 세션을 확인하지 못했습니다. 프로그램 내부 Instagram 로그인 화면에서 홈 화면이 표시될 때까지 기다린 뒤 다시 시도해 주세요.");
+                    }
                     
                     if (string.IsNullOrEmpty(cookieFile) && (tglXPrivateMode.Checked || tglInstaPrivateMode.Checked))
                     {
@@ -5017,14 +5465,10 @@ public partial class Form1 : Form
                     bool isYouTubeLoginDownload = LooksLikeYouTubeInput(url);
                     if (!isYouTubeLoginDownload)
                     {
-                        if (!string.IsNullOrEmpty(_capturedAuthToken)) customHeaders["authorization"] = _capturedAuthToken;
-                        if (!string.IsNullOrEmpty(_capturedCsrfToken)) customHeaders["x-csrf-token"] = _capturedCsrfToken;
+                        bool isXAuthenticationTarget = IsXPlatformUrl(url) || IsXDirectMediaUrl(url);
+                        if (isXAuthenticationTarget && !string.IsNullOrEmpty(_capturedAuthToken)) customHeaders["authorization"] = _capturedAuthToken;
+                        if (isXAuthenticationTarget && !string.IsNullOrEmpty(_capturedCsrfToken)) customHeaders["x-csrf-token"] = _capturedCsrfToken;
                         if (!string.IsNullOrEmpty(_capturedUserAgent)) customHeaders["User-Agent"] = _capturedUserAgent;
-                        if (string.IsNullOrEmpty(cookieFile))
-                        {
-                            string cookieHeader = await BuildWebViewCookieHeaderAsync();
-                            if (!string.IsNullOrWhiteSpace(cookieHeader)) customHeaders["Cookie"] = cookieHeader;
-                        }
                     }
                 }
                 catch (Exception ex)
@@ -5042,7 +5486,19 @@ public partial class Form1 : Form
                 }
             }
             
-            string finalFilePath = await downloader.DownloadVideoAsync(url, savePath, browser, _ytDlpCts.Token, cookieFile, customHeaders);
+            string finalFilePath = await DownloadWithKuaishouRetryAsync(
+                downloader,
+                url,
+                savePath,
+                browser,
+                _ytDlpCts.Token,
+                cookieFile,
+                customHeaders,
+                () =>
+                {
+                    lblYtDlpStatus.Text = "콰이쇼우 연결을 다시 확인하고 있습니다...";
+                    if (_isLoginBrowserMode) lblXStatus.Text = "콰이쇼우 연결을 다시 확인하고 있습니다...";
+                });
             _loginBrowserDownloadTitle = "";
 
             Notify("다운로드 완료", "영상 다운로드가 완료되었습니다.");
@@ -5074,10 +5530,12 @@ public partial class Form1 : Form
             else if (lowerUrlSuccess.Contains("chzzk")) platformSuccess = "치지직";
             else if (lowerUrlSuccess.Contains("soop") || lowerUrlSuccess.Contains("afreeca")) platformSuccess = "SOOP";
             else if (lowerUrlSuccess.Contains("instagram")) platformSuccess = "Instagram";
+            else if (IsThreadsPlatformUrl(url)) platformSuccess = "Threads";
             else if (lowerUrlSuccess.Contains("tiktok")) platformSuccess = "TikTok";
+            else if (IsKuaishouPlatformUrl(url)) platformSuccess = "Kuaishou";
             else if (lowerUrlSuccess.Contains("pinterest")) platformSuccess = "Pinterest";
             else if (lowerUrlSuccess.Contains("anilife")) platformSuccess = "Anilife";
-            else if (lowerUrlSuccess.Contains("linkkf")) platformSuccess = "Linkkf";
+            else if (IsLinkkfPlatformUrl(url)) platformSuccess = "Linkkf";
             else if (lowerUrlSuccess.Contains("youtube") || lowerUrlSuccess.Contains("youtu.be")) platformSuccess = "YouTube(범용)";
             
             LogUsage(platformSuccess);
@@ -6562,7 +7020,15 @@ public partial class Form1 : Form
                                     }
                                 }
 
-                                updateProgress.SetIndeterminate("설치 프로그램을 실행하고 있습니다...");
+                                updateProgress?.Close();
+                                updateProgress?.Dispose();
+                                updateProgress = null;
+
+                                if (!ShowUpdateReadyDialog(latestVersion))
+                                    return;
+
+                                updateProgress = new UpdateProgressForm();
+                                updateProgress.ShowCentered(this, "설치 프로그램을 실행하고 있습니다...");
                                 await Task.Delay(500);
 
                                 LaunchUpdateInstallerAfterExit(tempFile);
@@ -6972,6 +7438,15 @@ public partial class Form1 : Form
             {
                 _capturedUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari/537.36";
                 webViewX.CoreWebView2.Settings.AreDevToolsEnabled = false;
+                webViewX.CoreWebView2.Settings.IsPasswordAutosaveEnabled = false;
+                webViewX.CoreWebView2.Settings.IsGeneralAutofillEnabled = false;
+                try
+                {
+                    await webViewX.CoreWebView2.Profile.ClearBrowsingDataAsync(
+                        CoreWebView2BrowsingDataKinds.PasswordAutosave |
+                        CoreWebView2BrowsingDataKinds.GeneralAutofill);
+                }
+                catch { }
                 webViewX.CoreWebView2.NewWindowRequested += WebViewX_NewWindowRequested;
                 try
                 {
@@ -7054,12 +7529,21 @@ public partial class Form1 : Form
                 {
                     try
                     {
-                        if (Volatile.Read(ref _genericMediaCaptureDepth) <= 0) return;
                         using var doc = JsonDocument.Parse(args.ParameterObjectAsJson);
                         var root = doc.RootElement;
                         if (!root.TryGetProperty("response", out var response)) return;
 
                         string url = response.TryGetProperty("url", out var urlValue) ? urlValue.GetString() ?? "" : "";
+                        if (IsAnilifeMediaApiUrl(url) && root.TryGetProperty("requestId", out var requestIdValue))
+                        {
+                            string requestId = requestIdValue.GetString() ?? "";
+                            if (!string.IsNullOrWhiteSpace(requestId))
+                            {
+                                lock (_capturedMediaLock) _pendingAnilifeMediaRequestIds.Add(requestId);
+                            }
+                        }
+
+                        if (Volatile.Read(ref _genericMediaCaptureDepth) <= 0) return;
                         string mimeType = response.TryGetProperty("mimeType", out var mimeValue) ? mimeValue.GetString() ?? "" : "";
                         string resourceType = root.TryGetProperty("type", out var typeValue) ? typeValue.GetString() ?? "" : "";
                         if (LooksLikeCapturedMediaUrl(url, resourceType, mimeType))
@@ -7067,6 +7551,27 @@ public partial class Form1 : Form
                             RememberCapturedMediaUrl(url);
                             Debug.WriteLine($"[MMT-Intercept] Video response found: {GetBestCapturedMediaUrl()} ({mimeType})");
                         }
+                    }
+                    catch { }
+                };
+
+                webViewX.CoreWebView2.GetDevToolsProtocolEventReceiver("Network.loadingFinished").DevToolsProtocolEventReceived += (sender, args) =>
+                {
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(args.ParameterObjectAsJson);
+                        string requestId = doc.RootElement.TryGetProperty("requestId", out var requestIdValue)
+                            ? requestIdValue.GetString() ?? ""
+                            : "";
+                        if (string.IsNullOrWhiteSpace(requestId)) return;
+
+                        bool shouldCapture;
+                        lock (_capturedMediaLock)
+                        {
+                            shouldCapture = _pendingAnilifeMediaRequestIds.Remove(requestId);
+                        }
+
+                        if (shouldCapture) _ = CaptureAnilifeMediaResponseAsync(requestId);
                     }
                     catch { }
                 };
@@ -7199,6 +7704,15 @@ public partial class Form1 : Form
             await popupWebView.EnsureCoreWebView2Async(env);
 
             popupWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
+            popupWebView.CoreWebView2.Settings.IsPasswordAutosaveEnabled = false;
+            popupWebView.CoreWebView2.Settings.IsGeneralAutofillEnabled = false;
+            try
+            {
+                await popupWebView.CoreWebView2.Profile.ClearBrowsingDataAsync(
+                    CoreWebView2BrowsingDataKinds.PasswordAutosave |
+                    CoreWebView2BrowsingDataKinds.GeneralAutofill);
+            }
+            catch { }
             popupWebView.CoreWebView2.NavigationStarting += (s, args) =>
             {
                 if (TryBuildGoogleAccountChooserUrl(args.Uri, out string accountChooserUrl))
@@ -7291,6 +7805,47 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
         {
             _capturedMediaUrls.Clear();
             _capturedM3u8Url = "";
+            _capturedAnilifeManifestUrl = "";
+            _pendingAnilifeMediaRequestIds.Clear();
+        }
+    }
+
+    private static bool IsAnilifeMediaApiUrl(string url)
+    {
+        return Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+               uri.Host.Equals("api.anilife.app", StringComparison.OrdinalIgnoreCase) &&
+               uri.AbsolutePath.StartsWith("/v1/media/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task CaptureAnilifeMediaResponseAsync(string requestId)
+    {
+        try
+        {
+            if (webViewX.CoreWebView2 == null || string.IsNullOrWhiteSpace(requestId)) return;
+
+            string parameters = JsonSerializer.Serialize(new { requestId });
+            string responseJson = await webViewX.CoreWebView2.CallDevToolsProtocolMethodAsync("Network.getResponseBody", parameters);
+            using var responseDoc = JsonDocument.Parse(responseJson);
+            JsonElement root = responseDoc.RootElement;
+            if (!root.TryGetProperty("body", out var bodyValue)) return;
+
+            string body = bodyValue.GetString() ?? "";
+            if (root.TryGetProperty("base64Encoded", out var encodedValue) && encodedValue.GetBoolean())
+            {
+                byte[] bytes = Convert.FromBase64String(body);
+                if (bytes.Length > 4_000_000) return;
+                body = Encoding.UTF8.GetString(bytes);
+            }
+
+            string manifestUrl = YtDlpDownloader.TryResolveAnilifeManifestFromMediaResponse(body);
+            if (!LooksLikeCapturedMediaUrl(manifestUrl)) return;
+
+            lock (_capturedMediaLock) _capturedAnilifeManifestUrl = manifestUrl;
+            RememberCapturedMediaUrl(manifestUrl);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[AnilifeWebViewResolver] response capture failed: {ex.Message}");
         }
     }
 
@@ -7368,7 +7923,10 @@ try {
         '/MERGETASKS="!desktopicon"',
         ('/LOG="' + $LogPath + '"')
     )
-    Start-Process -FilePath $InstallerPath -ArgumentList $setupArguments -WindowStyle Hidden
+    $setup = Start-Process -FilePath $InstallerPath -ArgumentList $setupArguments -WindowStyle Hidden -PassThru -Wait
+    if ($setup.ExitCode -ne 0) {
+        throw "Update installer exited with code $($setup.ExitCode)."
+    }
 }
 catch {
     $_ | Out-File -LiteralPath $LauncherErrorPath -Encoding utf8
@@ -7390,6 +7948,510 @@ finally {
         };
 
         _ = Process.Start(launcherInfo) ?? throw new InvalidOperationException("업데이트 설치 실행기를 시작하지 못했습니다.");
+    }
+
+    private async Task<(string Url, string Title)> TryReadThreadsMediaFromWebViewAsync()
+    {
+        var completion = new TaskCompletionSource<(string Url, string Title)>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void BeginRead()
+        {
+            _ = ReadOnUiAsync();
+
+            async Task ReadOnUiAsync()
+            {
+                try
+                {
+                    if (webViewX.CoreWebView2 == null)
+                    {
+                        completion.TrySetResult(("", ""));
+                        return;
+                    }
+
+                    string resultJson = await webViewX.CoreWebView2.ExecuteScriptAsync("""
+(() => {
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 1;
+    const candidates = Array.from(document.querySelectorAll('video'))
+        .map(video => {
+            const url = String(video.currentSrc || video.src || '');
+            const rect = video.getBoundingClientRect();
+            const visibleWidth = Math.max(0, Math.min(rect.right, viewportWidth) - Math.max(rect.left, 0));
+            const visibleHeight = Math.max(0, Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0));
+            return {
+                url,
+                top: rect.top,
+                visibleArea: visibleWidth * visibleHeight,
+                area: Math.max(0, rect.width * rect.height)
+            };
+        })
+        .filter(item => /^https?:\/\//i.test(item.url));
+
+    const visible = candidates.filter(item => item.visibleArea > 0);
+    const pool = visible.length > 0 ? visible : candidates;
+    pool.sort((a, b) => {
+        if (visible.length > 0 && b.visibleArea !== a.visibleArea) return b.visibleArea - a.visibleArea;
+        if (b.area !== a.area) return b.area - a.area;
+        return Math.abs(a.top) - Math.abs(b.top);
+    });
+
+    const title = document.querySelector('meta[property="og:description"]')?.content ||
+        document.querySelector('meta[property="og:title"]')?.content ||
+        document.title || '';
+    return { url: pool[0]?.url || '', title: String(title) };
+})()
+""");
+
+                    using JsonDocument document = JsonDocument.Parse(resultJson);
+                    JsonElement root = document.RootElement;
+                    string url = root.TryGetProperty("url", out JsonElement urlValue) ? urlValue.GetString() ?? "" : "";
+                    string title = root.TryGetProperty("title", out JsonElement titleValue) ? titleValue.GetString() ?? "" : "";
+                    title = System.Net.WebUtility.HtmlDecode(title)
+                        .Replace("\r", " ")
+                        .Replace("\n", " ")
+                        .Trim();
+
+                    completion.TrySetResult((LooksLikeCapturedMediaUrl(url) ? url : "", title));
+                }
+                catch
+                {
+                    completion.TrySetResult(("", ""));
+                }
+            }
+        }
+
+        try
+        {
+            if (IsDisposed || Disposing) return ("", "");
+            if (InvokeRequired) BeginInvoke((Action)BeginRead);
+            else BeginRead();
+
+            Task completedTask = await Task.WhenAny(completion.Task, Task.Delay(2500));
+            return completedTask == completion.Task ? await completion.Task : ("", "");
+        }
+        catch
+        {
+            return ("", "");
+        }
+    }
+
+    private async Task<(string Url, string Title)> TryReadKuaishouMediaFromWebViewAsync()
+    {
+        var completion = new TaskCompletionSource<(string Url, string Title)>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void BeginRead()
+        {
+            _ = ReadOnUiAsync();
+
+            async Task ReadOnUiAsync()
+            {
+                try
+                {
+                    if (webViewX.CoreWebView2 == null)
+                    {
+                        completion.TrySetResult(("", ""));
+                        return;
+                    }
+
+                    string resultJson = await webViewX.CoreWebView2.ExecuteScriptAsync("""
+(() => {
+    const cache = window.__APOLLO_STATE__?.defaultClient || {};
+    const photoId = location.pathname.match(/^\/short-video\/([^/?#]+)/i)?.[1] || '';
+    const resolveRef = value => {
+        if (value && typeof value === 'object' && value.type === 'id' && value.id && cache[value.id]) {
+            return cache[value.id];
+        }
+        return value;
+    };
+
+    let detail = null;
+    for (const [key, value] of Object.entries(cache)) {
+        if (!key.toLowerCase().includes('visionvideodetail') || !key.includes(photoId)) continue;
+        const resolved = resolveRef(value);
+        if (resolved && resolveRef(resolved.photo)) {
+            detail = resolved;
+            break;
+        }
+    }
+
+    const photo = resolveRef(detail?.photo) || null;
+    const representations = [];
+    for (const adaptation of photo?.manifest?.adaptationSet || []) {
+        for (const representation of adaptation?.representation || []) {
+            if (!representation || representation.hidden === true) continue;
+            const urls = [];
+            if (typeof representation.url === 'string') urls.push(representation.url);
+            if (typeof representation.backupUrl === 'string') urls.push(representation.backupUrl);
+            if (Array.isArray(representation.backupUrl)) urls.push(...representation.backupUrl);
+            for (const url of urls) {
+                if (!/^https?:\/\//i.test(String(url || ''))) continue;
+                representations.push({
+                    url: String(url),
+                    pixels: Number(representation.width || 0) * Number(representation.height || 0),
+                    bitrate: Math.max(Number(representation.avgBitrate || 0), Number(representation.maxBitrate || 0)),
+                    frameRate: Number(representation.frameRate || 0)
+                });
+            }
+        }
+    }
+    representations.sort((a, b) => b.pixels - a.pixels || b.bitrate - a.bitrate || b.frameRate - a.frameRate);
+
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 1;
+    const videos = Array.from(document.querySelectorAll('video')).map(video => {
+        const rect = video.getBoundingClientRect();
+        const visibleWidth = Math.max(0, Math.min(rect.right, viewportWidth) - Math.max(rect.left, 0));
+        const visibleHeight = Math.max(0, Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0));
+        return {
+            url: String(video.currentSrc || video.src || ''),
+            visibleArea: visibleWidth * visibleHeight,
+            area: Math.max(0, rect.width * rect.height)
+        };
+    }).filter(item => /^https?:\/\//i.test(item.url));
+    videos.sort((a, b) => b.visibleArea - a.visibleArea || b.area - a.area);
+
+    let videoResource = typeof photo?.videoResource === 'string' ? photo.videoResource : '';
+    if (!/^https?:\/\//i.test(videoResource)) videoResource = '';
+    const url = representations[0]?.url || photo?.photoUrl || videoResource || videos[0]?.url || '';
+    let title = photo?.caption ||
+        document.querySelector('.video-info-title')?.textContent ||
+        document.querySelector('meta[property="og:title"]')?.content ||
+        '';
+    title = String(title || '').trim();
+    if (title === '短视频-快手' || title === '快手') title = '';
+    return { url: String(url || ''), title };
+})()
+""");
+
+                    using JsonDocument document = JsonDocument.Parse(resultJson);
+                    JsonElement root = document.RootElement;
+                    string url = root.TryGetProperty("url", out JsonElement urlValue) ? urlValue.GetString() ?? "" : "";
+                    string title = root.TryGetProperty("title", out JsonElement titleValue) ? titleValue.GetString() ?? "" : "";
+                    title = System.Net.WebUtility.HtmlDecode(title)
+                        .Replace("\r", " ")
+                        .Replace("\n", " ")
+                        .Trim();
+
+                    completion.TrySetResult((LooksLikeCapturedMediaUrl(url) ? url : "", title));
+                }
+                catch
+                {
+                    completion.TrySetResult(("", ""));
+                }
+            }
+        }
+
+        try
+        {
+            if (IsDisposed || Disposing) return ("", "");
+            if (InvokeRequired) BeginInvoke((Action)BeginRead);
+            else BeginRead();
+
+            Task completedTask = await Task.WhenAny(completion.Task, Task.Delay(2500));
+            return completedTask == completion.Task ? await completion.Task : ("", "");
+        }
+        catch
+        {
+            return ("", "");
+        }
+    }
+
+    private async Task<string> TryReadAnilifePageTitleFromWebViewAsync()
+    {
+        var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void BeginRead()
+        {
+            _ = ReadOnUiAsync();
+
+            async Task ReadOnUiAsync()
+            {
+                try
+                {
+                    if (webViewX.CoreWebView2 == null)
+                    {
+                        completion.TrySetResult("");
+                        return;
+                    }
+
+                    string encodedTitle = await webViewX.CoreWebView2.ExecuteScriptAsync("document.title || ''");
+                    string title = JsonSerializer.Deserialize<string>(encodedTitle) ?? "";
+                    title = System.Net.WebUtility.HtmlDecode(title)
+                        .Replace("\r", " ")
+                        .Replace("\n", " ")
+                        .Trim();
+
+                    foreach (string suffix in new[] { " | 애니라이프", " | Anilife" })
+                    {
+                        if (title.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                            title = title[..^suffix.Length].Trim();
+                    }
+
+                    if (title.Equals("애니라이프", StringComparison.OrdinalIgnoreCase) ||
+                        title.Equals("Anilife", StringComparison.OrdinalIgnoreCase))
+                    {
+                        title = "";
+                    }
+
+                    completion.TrySetResult(title);
+                }
+                catch
+                {
+                    completion.TrySetResult("");
+                }
+            }
+        }
+
+        try
+        {
+            if (IsDisposed || Disposing) return "";
+            if (InvokeRequired) BeginInvoke((Action)BeginRead);
+            else BeginRead();
+
+            Task completedTask = await Task.WhenAny(completion.Task, Task.Delay(2000));
+            return completedTask == completion.Task ? await completion.Task : "";
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private async Task<(string Url, string Diagnostic)> TryResolveAnilifeManifestViaPageApiAsync(string targetUrl)
+    {
+        string videoId = "";
+        string encodedReferer = "";
+        try
+        {
+            var uri = new Uri(targetUrl);
+            encodedReferer = Uri.EscapeDataString(uri.PathAndQuery);
+            foreach (string parameter in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+            {
+                string[] parts = parameter.Split('=', 2);
+                if (parts.Length == 2 && parts[0].Equals("id", StringComparison.OrdinalIgnoreCase))
+                {
+                    videoId = Uri.UnescapeDataString(parts[1]);
+                    break;
+                }
+            }
+        }
+        catch { }
+
+        if (string.IsNullOrWhiteSpace(videoId))
+            return ("", "영상 ID를 주소에서 확인하지 못했습니다.");
+
+        string deviceToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        var completion = new TaskCompletionSource<(string Url, string Diagnostic)>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void BeginResolve()
+        {
+            _ = ResolveOnUiAsync();
+
+            async Task ResolveOnUiAsync()
+            {
+                try
+                {
+                    CoreWebView2? core = webViewX.CoreWebView2;
+                    if (core == null)
+                    {
+                        completion.TrySetResult(("", "로그인 브라우저가 준비되지 않았습니다."));
+                        return;
+                    }
+
+                    if (!Uri.TryCreate(core.Source, UriKind.Absolute, out var sourceUri) ||
+                        !sourceUri.Host.Equals("anilife.app", StringComparison.OrdinalIgnoreCase))
+                    {
+                        completion.TrySetResult(("", "Anilife 페이지가 브라우저에서 열리지 않았습니다."));
+                        return;
+                    }
+
+                    string bootstrapScript = """
+(() => {
+    window.__mmtAnilifeResolve = { done: false };
+    const finish = value => { window.__mmtAnilifeResolve = { done: true, ...value }; };
+    (async () => {
+        try {
+            const videoId = __VIDEO_ID__;
+            const encodedReferer = __ENCODED_REFERER__;
+            const deviceToken = __DEVICE_TOKEN__;
+            const buildId = String(window.__NUXT__?.config?.public?.buildVersion || window.__NUXT__?.config?.public?.buildId || '');
+            if (!buildId) { finish({ ok: false, stage: 'build' }); return; }
+
+            const tokenResponse = await fetch('https://api.anilife.app/v1/csrf/token', {
+                credentials: 'include',
+                headers: { Accept: 'application/json' }
+            });
+            if (!tokenResponse.ok) { finish({ ok: false, stage: 'csrf', status: tokenResponse.status }); return; }
+
+            const tokenData = await tokenResponse.json();
+            const csrfToken = String(tokenData.token || tokenData.csrfToken || '');
+            const csrfHeader = String(tokenData.headerName || 'x-csrf-token');
+            if (!csrfToken || !/^[A-Za-z0-9-]+$/.test(csrfHeader)) {
+                finish({ ok: false, stage: 'csrf-data' });
+                return;
+            }
+
+            const headers = {
+                Accept: 'application/json',
+                'Content-Type': 'application/json',
+                'x-client-id': 'web',
+                'x-build-id': buildId,
+                'x-anilife-referer': encodedReferer,
+                'x-device-token': deviceToken
+            };
+            headers[csrfHeader] = csrfToken;
+
+            const mediaResponse = await fetch(`https://api.anilife.app/v1/media/${encodeURIComponent(videoId)}`, {
+                credentials: 'include',
+                headers
+            });
+            if (!mediaResponse.ok) { finish({ ok: false, stage: 'media', status: mediaResponse.status }); return; }
+
+            const body = await mediaResponse.text();
+            if (body.length > 4000000) { finish({ ok: false, stage: 'size' }); return; }
+            finish({ ok: true, body });
+        } catch (error) {
+            finish({ ok: false, stage: 'exception', message: String(error || '') });
+        }
+    })();
+})()
+"""
+                        .Replace("__VIDEO_ID__", JsonSerializer.Serialize(videoId), StringComparison.Ordinal)
+                        .Replace("__ENCODED_REFERER__", JsonSerializer.Serialize(encodedReferer), StringComparison.Ordinal)
+                        .Replace("__DEVICE_TOKEN__", JsonSerializer.Serialize(deviceToken), StringComparison.Ordinal);
+
+                    await core.ExecuteScriptAsync(bootstrapScript);
+
+                    for (int attempt = 0; attempt < 30; attempt++)
+                    {
+                        await Task.Delay(250);
+                        string encodedState = await core.ExecuteScriptAsync("JSON.stringify(window.__mmtAnilifeResolve || { done: false })");
+                        string stateJson = JsonSerializer.Deserialize<string>(encodedState) ?? "";
+                        if (string.IsNullOrWhiteSpace(stateJson)) continue;
+
+                        using var stateDoc = JsonDocument.Parse(stateJson);
+                        JsonElement state = stateDoc.RootElement;
+                        if (!state.TryGetProperty("done", out var doneValue) || !doneValue.GetBoolean()) continue;
+
+                        bool ok = state.TryGetProperty("ok", out var okValue) && okValue.GetBoolean();
+                        if (ok)
+                        {
+                            string body = state.TryGetProperty("body", out var bodyValue) ? bodyValue.GetString() ?? "" : "";
+                            string manifestUrl = YtDlpDownloader.TryResolveAnilifeManifestFromMediaResponse(body);
+                            completion.TrySetResult(string.IsNullOrWhiteSpace(manifestUrl)
+                                ? ("", "Anilife 미디어 응답 형식이 변경되었습니다.")
+                                : (manifestUrl, ""));
+                            return;
+                        }
+
+                        string stage = state.TryGetProperty("stage", out var stageValue) ? stageValue.GetString() ?? "" : "";
+                        int status = state.TryGetProperty("status", out var statusValue) && statusValue.TryGetInt32(out int parsedStatus) ? parsedStatus : 0;
+                        string diagnostic = stage switch
+                        {
+                            "build" => "Anilife 페이지 설정을 읽지 못했습니다.",
+                            "csrf" => $"Anilife 토큰 요청이 거부되었습니다 (HTTP {status}).",
+                            "csrf-data" => "Anilife 토큰 응답 형식이 변경되었습니다.",
+                            "media" => $"Anilife 미디어 요청이 거부되었습니다 (HTTP {status}).",
+                            "size" => "Anilife 미디어 응답 크기가 비정상적으로 큽니다.",
+                            "exception" => "Anilife 페이지 내부 요청이 차단되었습니다.",
+                            _ => "Anilife 페이지 내부 요청에 실패했습니다."
+                        };
+                        completion.TrySetResult(("", diagnostic));
+                        return;
+                    }
+
+                    completion.TrySetResult(("", "Anilife 페이지 내부 요청 시간이 초과되었습니다."));
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[AnilifePageApiResolver] error: {ex.Message}");
+                    completion.TrySetResult(("", "Anilife 페이지 내부 요청을 실행하지 못했습니다."));
+                }
+                finally
+                {
+                    try
+                    {
+                        if (webViewX.CoreWebView2 != null)
+                            await webViewX.CoreWebView2.ExecuteScriptAsync("delete window.__mmtAnilifeResolve");
+                    }
+                    catch { }
+                }
+            }
+        }
+
+        try
+        {
+            if (IsDisposed || Disposing) return ("", "프로그램이 종료 중입니다.");
+            if (InvokeRequired) BeginInvoke((Action)BeginResolve);
+            else BeginResolve();
+
+            Task completedTask = await Task.WhenAny(completion.Task, Task.Delay(10_000));
+            return completedTask == completion.Task
+                ? await completion.Task
+                : ("", "Anilife 페이지 내부 요청 시간이 초과되었습니다.");
+        }
+        catch
+        {
+            return ("", "Anilife 페이지 내부 요청을 시작하지 못했습니다.");
+        }
+    }
+
+    private async Task<string> TryReadAnilifeManifestFromWebViewAsync()
+    {
+        lock (_capturedMediaLock)
+        {
+            if (!string.IsNullOrWhiteSpace(_capturedAnilifeManifestUrl))
+                return _capturedAnilifeManifestUrl;
+        }
+
+        var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void BeginRead()
+        {
+            _ = ReadAsync();
+
+            async Task ReadAsync()
+            {
+                try
+                {
+                    if (webViewX.CoreWebView2 == null)
+                    {
+                        completion.TrySetResult("");
+                        return;
+                    }
+
+                    string resultJson = await webViewX.CoreWebView2.ExecuteScriptAsync(@"
+(() => {
+    const entries = performance.getEntriesByType('resource');
+    for (let index = entries.length - 1; index >= 0; index--) {
+        const url = String(entries[index].name || '');
+        if (url.includes('api.gcdn.app/v1/manifest/a/') && url.includes('.m3u8')) return url;
+    }
+    return '';
+})()");
+                    string result = JsonSerializer.Deserialize<string>(resultJson) ?? "";
+                    completion.TrySetResult(LooksLikeCapturedMediaUrl(result) ? result : "");
+                }
+                catch
+                {
+                    completion.TrySetResult("");
+                }
+            }
+        }
+
+        try
+        {
+            if (IsDisposed || Disposing) return "";
+            if (InvokeRequired) BeginInvoke((Action)BeginRead);
+            else BeginRead();
+
+            Task completedTask = await Task.WhenAny(completion.Task, Task.Delay(2500));
+            return completedTask == completion.Task ? await completion.Task : "";
+        }
+        catch
+        {
+            return "";
+        }
     }
 
     private string GetBestCapturedMediaUrl(string preferredMediaId = "")
@@ -7459,13 +8521,26 @@ finally {
 
         return lower.Contains(".m3u8") ||
                lower.Contains(".mpd") ||
-               lower.Contains(".mp4") && (mediaResponse || lower.Contains("video.twimg.com") || lower.Contains("scontent") || lower.Contains("fbcdn") || lower.Contains("cdninstagram.com")) ||
+               lower.Contains(".mp4") && (mediaResponse ||
+                                           lower.Contains("video.twimg.com") ||
+                                           lower.Contains("scontent") ||
+                                           lower.Contains("fbcdn") ||
+                                           lower.Contains("cdninstagram.com") ||
+                                           lower.Contains("kwimgs.com") ||
+                                           lower.Contains("yximgs.com") ||
+                                           lower.Contains("wskwai.com")) ||
                mediaResponse ||
                manifestResponse ||
-               lower.Contains("gcdn.app") ||
-               lower.Contains("anilife.app") ||
                lower.Contains("sooplive") && (lower.Contains("manifest") || lower.Contains(".m3u8")) ||
                lower.Contains("pstatic.net") && (lower.Contains(".m3u8") || lower.Contains(".ts"));
+    }
+
+    private static bool IsAnilifeManifestCaptureUrl(string url)
+    {
+        return Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+               uri.Host.Equals("api.gcdn.app", StringComparison.OrdinalIgnoreCase) &&
+               uri.AbsolutePath.Contains("/v1/manifest/a/", StringComparison.OrdinalIgnoreCase) &&
+               uri.AbsolutePath.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsLikelyAdvertisingMediaUrl(string lowerUrl)
@@ -7509,19 +8584,8 @@ finally {
 
     private static bool ShouldUseLoginBrowserCookiesForUrl(string url)
     {
-        if (string.IsNullOrWhiteSpace(url)) return false;
-        string lower = url.ToLowerInvariant();
-
-        return lower.Contains("x.com") ||
-               lower.Contains("twitter.com") ||
-               lower.Contains("instagram.com") ||
-               lower.Contains("youtube.com") ||
-               lower.Contains("youtu.be") ||
-               lower.Contains("youtube-nocookie.com") ||
-               lower.Contains("chzzk.naver.com") ||
-               lower.Contains("pstatic.net") ||
-               lower.Contains("sooplive") ||
-               lower.Contains("afreecatv.com");
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)) return false;
+        return IsKnownLoginCookieHost(uri.Host);
     }
 
     private async void TglXPrivateMode_CheckedChanged(object sender, EventArgs e)
@@ -7668,7 +8732,7 @@ finally {
     }
 
 
-    private void InstaLoginWatcher(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs e)
+    private async void InstaLoginWatcher(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs e)
     {
         if (webViewX.CoreWebView2 == null) return;
         string currentUrl = webViewX.CoreWebView2.Source;
@@ -7676,6 +8740,20 @@ finally {
 
         if (currentUrl.Contains("instagram.com") && !currentUrl.Contains("/accounts/login"))
         {
+            bool hasLoginSession = false;
+            for (int attempt = 0; attempt < 3 && !hasLoginSession; attempt++)
+            {
+                hasLoginSession = await HasInstagramSessionCookieAsync();
+                if (!hasLoginSession) await Task.Delay(400);
+            }
+
+            if (!hasLoginSession)
+            {
+                if (lblXStatus != null)
+                    lblXStatus.Text = "Instagram 로그인 완료를 확인 중입니다. 홈 화면이 표시될 때까지 기다려 주세요.";
+                return;
+            }
+
             // 로그인 감지 후 중복 이벤트 제거
             webViewX.CoreWebView2.NavigationCompleted -= InstaLoginWatcher;
             webViewX.CoreWebView2.Stop();
@@ -7701,7 +8779,11 @@ finally {
 
                 lblInstaPrivateMode.Text = "Instagram 로그인됨";
                 lblYtDlpStatus.Text = "Instagram 로그인 성공! 이제 주소를 넣고 다운로드하세요.";
-                ShowCenteredMessage("Instagram 로그인 성공!\n\n이제 Instagram 영상 주소를 넣고 [다운로드]를 누르면 됩니다.\n\n해제하면 로그아웃됩니다.", "성공", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowCenteredMessage(
+                    "Instagram 로그인 성공!\n\n이제 Instagram 영상 주소를 넣고 [다운로드]를 누르면 됩니다.\n\n'Instagram 로그인됨' 상태를 해제하면 프로그램 내부의 Instagram 로그인 쿠키가 삭제되어 로그아웃됩니다. Chrome이나 Edge의 로그인 상태에는 영향을 주지 않습니다.",
+                    "성공",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
                 this.PerformLayout();
                 this.Refresh();
             }));
@@ -7709,6 +8791,22 @@ finally {
     }
 
     private bool _isInstaLoggedIn = false;
+
+    private async Task<bool> HasInstagramSessionCookieAsync()
+    {
+        try
+        {
+            if (webViewX.CoreWebView2 == null) return false;
+            var cookies = await webViewX.CoreWebView2.CookieManager.GetCookiesAsync("https://www.instagram.com/");
+            return cookies.Any(cookie =>
+                cookie.Name.Equals("sessionid", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(cookie.Value));
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     private async Task ClearInstagramCookiesAsync()
     {
@@ -9374,6 +10472,7 @@ finally {
         return siteName == "X" ||
                siteName == "\uC6F9 \uBE0C\uB77C\uC6B0\uC800" ||
                siteName == "\uAE30\uD0C0" ||
+               siteName == "콰이쇼우" ||
                siteName == "\uCE58\uC9C0\uC9C1" ||
                siteName == "SOOP";
     }
@@ -9444,6 +10543,7 @@ finally {
         {
             "X" => "https://x.com/",
             "Instagram" => "https://www.instagram.com/accounts/login/",
+            "콰이쇼우" => "https://www.kuaishou.com/",
             "\uCE58\uC9C0\uC9C1" => "https://chzzk.naver.com/",
             "SOOP" => "https://www.sooplive.co.kr/",
             _ => "https://www.google.com/"
@@ -9937,9 +11037,13 @@ finally {
     private async Task<string> ExportWebViewCookiesAsync(string targetUrl = "")
     {
         if (webViewX.CoreWebView2 == null) return "";
+        if (!Uri.TryCreate(targetUrl, UriKind.Absolute, out Uri? targetUri) ||
+            (targetUri.Scheme != Uri.UriSchemeHttp && targetUri.Scheme != Uri.UriSchemeHttps))
+        {
+            return "";
+        }
         
         var cookieManager = webViewX.CoreWebView2.CookieManager;
-        // 모든 쿠키를 모은 뒤 지원 도메인만 저장한다.
         var cookies = new List<CoreWebView2Cookie>();
         var seenCookies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -9959,9 +11063,9 @@ finally {
             catch { }
         }
 
-        await AddCookiesAsync(null);
+        await AddCookiesAsync($"{targetUri.Scheme}://{targetUri.Host}/");
 
-        if (LooksLikeYouTubeInput(targetUrl))
+        if (HostMatchesAnyDomain(targetUri.Host, "youtube.com", "youtube-nocookie.com", "youtu.be", "google.com", "googlevideo.com"))
         {
             await AddCookiesAsync("https://www.youtube.com/");
             await AddCookiesAsync("https://youtube.com/");
@@ -9971,9 +11075,34 @@ finally {
             await AddCookiesAsync("https://myaccount.google.com/");
             await AddCookiesAsync("https://www.google.com/");
         }
-        else if (Uri.TryCreate(targetUrl, UriKind.Absolute, out var targetUri))
+        else if (HostMatchesAnyDomain(targetUri.Host, "x.com", "twitter.com", "twimg.com"))
         {
-            await AddCookiesAsync($"{targetUri.Scheme}://{targetUri.Host}/");
+            await AddCookiesAsync("https://x.com/");
+            await AddCookiesAsync("https://twitter.com/");
+        }
+        else if (HostMatchesAnyDomain(targetUri.Host, "instagram.com", "cdninstagram.com", "fbcdn.net"))
+        {
+            await AddCookiesAsync("https://www.instagram.com/");
+        }
+        else if (HostMatchesAnyDomain(targetUri.Host, "threads.com", "threads.net"))
+        {
+            await AddCookiesAsync("https://www.threads.com/");
+            await AddCookiesAsync("https://www.instagram.com/");
+        }
+        else if (HostMatchesAnyDomain(targetUri.Host, "kuaishou.com", "kwimgs.com", "yximgs.com", "wskwai.com"))
+        {
+            await AddCookiesAsync("https://www.kuaishou.com/");
+            await AddCookiesAsync("https://video.kuaishou.com/");
+        }
+        else if (HostMatchesAnyDomain(targetUri.Host, "naver.com", "pstatic.net"))
+        {
+            await AddCookiesAsync("https://chzzk.naver.com/");
+            await AddCookiesAsync("https://www.naver.com/");
+        }
+        else if (HostMatchesAnyDomain(targetUri.Host, "sooplive.com", "sooplive.co.kr", "afreecatv.com"))
+        {
+            await AddCookiesAsync("https://www.sooplive.co.kr/");
+            await AddCookiesAsync("https://www.afreecatv.com/");
         }
         
         if (cookies == null || cookies.Count == 0) return "";
@@ -9986,11 +11115,11 @@ finally {
             sw.WriteLine("# Netscape HTTP Cookie File");
             sw.WriteLine("# This file is generated by YoutubeDownloader");
             
-            foreach (var c in cookies)
-            {
+                foreach (var c in cookies)
+                {
 
-                string cookieDomain = c.Domain.ToLowerInvariant();
-                if (!IsSupportedLoginCookieDomain(cookieDomain)) continue;
+                    string cookieDomain = c.Domain.ToLowerInvariant();
+                    if (!IsCookieDomainAllowedForTarget(cookieDomain, targetUri.Host)) continue;
 
                 count++;
                 string domain = c.Domain;
@@ -9999,7 +11128,7 @@ finally {
                 
                 long expires = 0;
                 try {
-                    if (c.Expires == default(DateTime) || c.Expires.Year > 2050) {
+                    if (c.IsSession || c.Expires == default(DateTime) || c.Expires.Year < 1970 || c.Expires.Year > 2037) {
                         expires = 2147483647; // Session or far future
                     } else {
                         expires = new DateTimeOffset(c.Expires).ToUnixTimeSeconds();
@@ -10017,60 +11146,66 @@ finally {
         return "";
     }
 
-    private static bool IsSupportedLoginCookieDomain(string domain)
+    private static bool CookieFileContainsCookie(string cookieFile, string cookieName)
     {
-        string lower = domain.ToLowerInvariant();
-        return lower.Contains("x.com") ||
-               lower.Contains("twitter.com") ||
-               lower.Contains("instagram.com") ||
-               lower.Contains("youtube.com") ||
-               lower.Contains("youtube-nocookie.com") ||
-               lower.Contains("google.com") ||
-               lower.Contains("naver.com") ||
-               lower.Contains("pstatic.net") ||
-               lower.Contains("sooplive.com") ||
-               lower.Contains("sooplive.co.kr") ||
-               lower.Contains("afreecatv.com");
-    }
-
-    private async Task<string> BuildWebViewCookieHeaderAsync()
-    {
-        if (webViewX.CoreWebView2 == null) return "";
+        if (string.IsNullOrWhiteSpace(cookieFile) || !File.Exists(cookieFile)) return false;
 
         try
         {
-            var cookies = await webViewX.CoreWebView2.CookieManager.GetCookiesAsync(null);
-            if (cookies == null || cookies.Count == 0) return "";
-
-            var parts = new List<string>();
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var cookie in cookies)
+            foreach (string line in File.ReadLines(cookieFile))
             {
-                string domain = cookie.Domain.ToLowerInvariant();
-                bool isSupportedLoginDomain =
-                    domain.Contains("x.com") ||
-                    domain.Contains("twitter.com") ||
-                    domain.Contains("instagram.com") ||
-                    domain.Contains("youtube.com") ||
-                    domain.Contains("google.com") ||
-                    domain.Contains("youtube-nocookie.com") ||
-                    domain.Contains("naver.com") ||
-                    domain.Contains("pstatic.net") ||
-                    domain.Contains("sooplive") ||
-                    domain.Contains("afreecatv.com");
-
-                if (!isSupportedLoginDomain) continue;
-                string key = $"{cookie.Domain}|{cookie.Path}|{cookie.Name}";
-                if (!seen.Add(key)) continue;
-                parts.Add($"{cookie.Name}={cookie.Value}");
+                if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#')) continue;
+                string[] fields = line.Split('\t');
+                if (fields.Length >= 7 && fields[5].Equals(cookieName, StringComparison.OrdinalIgnoreCase))
+                    return true;
             }
+        }
+        catch { }
 
-            return string.Join("; ", parts);
-        }
-        catch
+        return false;
+    }
+
+    private static bool IsKnownLoginCookieHost(string host)
+    {
+        return LoginCookieDomainGroups.Any(group => HostMatchesAnyDomain(host, group));
+    }
+
+    private static bool IsCookieDomainAllowedForTarget(string cookieDomain, string targetHost)
+    {
+        string normalizedCookieDomain = NormalizeCookieDomain(cookieDomain);
+        string normalizedTargetHost = NormalizeCookieDomain(targetHost);
+        if (string.IsNullOrEmpty(normalizedCookieDomain) || string.IsNullOrEmpty(normalizedTargetHost)) return false;
+
+        if (HostMatchesDomain(normalizedTargetHost, normalizedCookieDomain)) return true;
+
+        foreach (string[] group in LoginCookieDomainGroups)
         {
-            return "";
+            if (HostMatchesAnyDomain(normalizedTargetHost, group) &&
+                HostMatchesAnyDomain(normalizedCookieDomain, group))
+            {
+                return true;
+            }
         }
+
+        return false;
+    }
+
+    private static bool HostMatchesAnyDomain(string host, params string[] domains)
+    {
+        return domains.Any(domain => HostMatchesDomain(host, domain));
+    }
+
+    private static bool HostMatchesDomain(string host, string domain)
+    {
+        string normalizedHost = NormalizeCookieDomain(host);
+        string normalizedDomain = NormalizeCookieDomain(domain);
+        return normalizedHost.Equals(normalizedDomain, StringComparison.OrdinalIgnoreCase) ||
+               normalizedHost.EndsWith("." + normalizedDomain, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeCookieDomain(string value)
+    {
+        return (value ?? string.Empty).Trim().TrimStart('.').TrimEnd('.').ToLowerInvariant();
     }
 
     private class DownloadJob
@@ -10422,6 +11557,7 @@ finally {
             var payload = new
             {
                 username = "MMT \uB370\uC774\uD130 \uC9D1\uACC4\uAE30",
+                allowed_mentions = new { parse = Array.Empty<string>() },
                 content = isError
                     ? $"**[\uC624\uB958 \uBCF4\uACE0]** v{CURR_VERSION}\n**\uAE30\uAE30 ID**: `{installId}`\n**\uB0B4\uC6A9**\n{safeErrorMsg}\n**\uC2DC\uAC01**: `{DateTime.Now:yyyy-MM-dd HH:mm:ss}`"
                     : $"**[{reportTitle}]** v{CURR_VERSION}\n**\uAE30\uAE30 ID**: `{installId}`\n\n**\uAE30\uB2A5 \uC0AC\uC6A9 \uD1B5\uACC4**\n{statsStr}\n\n**\uBCF4\uACE0 \uAE30\uC900**: `{todayStr}`\n**\uBCF4\uACE0 \uC2DC\uAC01**: `{DateTime.Now:yyyy-MM-dd HH:mm}`"
@@ -10554,7 +11690,125 @@ finally {
             }
         }
 
-        return string.Join("\n", lines);
+        return RedactSensitiveReportData(string.Join("\n", lines));
+    }
+
+    private static string RedactSensitiveReportData(string text)
+    {
+        string redacted = text;
+        redacted = System.Text.RegularExpressions.Regex.Replace(
+            redacted,
+            @"(?is)(--add-header|-headers)\s+""[^""]*""",
+            "$1 [REDACTED]");
+        redacted = System.Text.RegularExpressions.Regex.Replace(
+            redacted,
+            @"(?i)--cookies(?:-from-browser)?\s+(?:""[^""]*""|\S+)",
+            "--cookies [REDACTED]");
+        redacted = System.Text.RegularExpressions.Regex.Replace(
+            redacted,
+            @"(?im)\b(Cookie|Authorization|Proxy-Authorization|x-csrf-token|x-device-token)\s*[:=]\s*[^\r\n]*",
+            "$1: [REDACTED]");
+        redacted = System.Text.RegularExpressions.Regex.Replace(
+            redacted,
+            @"https?://[^\s<>\r\n]+",
+            match => SanitizeUrlMatchForReport(match.Value));
+
+        redacted = ReplacePathForReport(
+            redacted,
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "%USERPROFILE%");
+        redacted = ReplacePathForReport(
+            redacted,
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "%LOCALAPPDATA%");
+        redacted = ReplacePathForReport(redacted, Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar), "%TEMP%");
+        return redacted;
+    }
+
+    private static string SanitizeUrlMatchForReport(string rawMatch)
+    {
+        string candidate = rawMatch;
+        string suffix = "";
+        while (candidate.Length > 0 && ").,;]}>'\"".Contains(candidate[^1]))
+        {
+            suffix = candidate[^1] + suffix;
+            candidate = candidate[..^1];
+        }
+
+        return SanitizeUrlForReport(candidate) + suffix;
+    }
+
+    private static string SanitizeUrlForReport(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return url;
+        }
+
+        try
+        {
+            var builder = new UriBuilder(uri)
+            {
+                UserName = "",
+                Password = "",
+                Fragment = ""
+            };
+
+            string query = uri.Query.TrimStart('?');
+            if (!string.IsNullOrEmpty(query))
+            {
+                var safeParts = new List<string>();
+                foreach (string part in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    int equalsIndex = part.IndexOf('=');
+                    string rawKey = equalsIndex >= 0 ? part[..equalsIndex] : part;
+                    string decodedKey;
+                    try { decodedKey = Uri.UnescapeDataString(rawKey.Replace("+", " ")); }
+                    catch { decodedKey = rawKey; }
+
+                    safeParts.Add(IsSensitiveQueryKey(decodedKey)
+                        ? rawKey + "=%5BREDACTED%5D"
+                        : part);
+                }
+                builder.Query = string.Join("&", safeParts);
+            }
+
+            return builder.Uri.AbsoluteUri;
+        }
+        catch
+        {
+            return url;
+        }
+    }
+
+    private static bool IsSensitiveQueryKey(string key)
+    {
+        string value = key.Trim().ToLowerInvariant();
+        return value.Contains("token") ||
+               value.Contains("auth") ||
+               value.Contains("cookie") ||
+               value.Contains("session") ||
+               value.Contains("signature") ||
+               value.Contains("credential") ||
+               value.Contains("password") ||
+               value.Contains("secret") ||
+               value.Contains("hmac") ||
+               value.Contains("hdnts") ||
+               value.Equals("sig", StringComparison.Ordinal) ||
+               value.Equals("key", StringComparison.Ordinal) ||
+               value.Equals("policy", StringComparison.Ordinal) ||
+               value.Equals("acl", StringComparison.Ordinal);
+    }
+
+    private static string ReplacePathForReport(string text, string path, string replacement)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return text;
+        return System.Text.RegularExpressions.Regex.Replace(
+            text,
+            System.Text.RegularExpressions.Regex.Escape(path),
+            replacement.Replace("$", "$$"),
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     }
 
     // 전역 오류 보고용 헬퍼

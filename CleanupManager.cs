@@ -108,6 +108,27 @@ namespace YoutubeDownloader
             ActiveFiles.TryRemove(path, out _);
         }
 
+        public static void DeleteStaleCookieExports()
+        {
+            DeleteMatchingFiles(SettingsManager.UserDataFolder, "temp*_cookies*.txt");
+            DeleteMatchingFiles(Path.GetTempPath(), "mmt_cookies*.txt");
+        }
+
+        private static void DeleteMatchingFiles(string directory, string pattern)
+        {
+            if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory)) return;
+
+            try
+            {
+                foreach (string file in Directory.EnumerateFiles(directory, pattern, SearchOption.TopDirectoryOnly))
+                {
+                    DeleteFileOrDirectoryWithRetry(file);
+                    ActiveFiles.TryRemove(file, out _);
+                }
+            }
+            catch { }
+        }
+
         public static void RegisterProcess(Process p)
         {
             if (p != null)

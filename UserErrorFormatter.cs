@@ -73,6 +73,11 @@ internal static class UserErrorFormatter
         if (ContainsAny(lower, "requested format is not available", "only images storyboard"))
             return "사용 가능한 영상 포맷 없음";
 
+        if (lower.Contains("애니라이프", StringComparison.Ordinal) &&
+            (lower.Contains("암호화된 재생 방식", StringComparison.Ordinal) ||
+             lower.Contains("영상 키를 외부 다운로드 요청", StringComparison.Ordinal)))
+            return "애니라이프 재생 방식 변경";
+
         if (ContainsAny(lower, "ffmpeg", "ffprobe", "conversion failed") ||
             message.Contains("변환 실패", StringComparison.OrdinalIgnoreCase) ||
             message.Contains("MP4 변환 실패", StringComparison.OrdinalIgnoreCase))
@@ -96,7 +101,10 @@ internal static class UserErrorFormatter
                 "temporary failure in name resolution",
                 "network is unreachable",
                 "connection refused",
-                "connection reset"))
+                "connection reset",
+                "connectionreseterror",
+                "forcibly closed",
+                "원격 호스트에 의해 강제로 끊겼습니다"))
             return "네트워크 연결 오류";
 
         if (ContainsAny(lower, "404", "not found"))
@@ -122,6 +130,7 @@ internal static class UserErrorFormatter
             "ffmpeg 변환 실패" => "영상 조각은 받았지만 MP4 병합 또는 변환에 실패했습니다. 필수 도구와 원본 스트림 상태를 확인해 주세요.",
             "로그인 필요" => "로그인이 필요한 영상일 수 있습니다. 로그인 후 다운 화면에서 로그인한 뒤 다시 시도해 주세요.",
             "사용 가능한 영상 포맷 없음" => "받을 수 있는 영상 포맷을 찾지 못했습니다. 로그인 권한, 라이브 상태, 다운로드 엔진 업데이트 여부를 확인해 주세요.",
+            "애니라이프 재생 방식 변경" => "애니라이프가 외부 다운로드 요청에 영상 키를 제공하지 않는 방식으로 바뀌었습니다. 주소나 인터넷 문제가 아니며 사이트 대응 업데이트가 필요합니다.",
             "사이트 구조 변경 가능성" => "현재 주소를 지원하지 않거나 사이트 구조가 바뀌었을 수 있습니다. 주소가 영상 페이지인지 확인한 뒤 다시 시도해 주세요.",
             "네트워크 시간 초과" => "사이트 응답이 느리거나 네트워크가 불안정합니다. 잠시 뒤 다시 시도해 주세요.",
             "네트워크 연결 오류" => "인터넷 연결 또는 사이트 접속 상태를 확인한 뒤 다시 시도해 주세요.",
