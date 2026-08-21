@@ -12,6 +12,7 @@ internal static class SiteDownloadProfileRegistry
         new KuaishouDownloadProfile(),
         new XDownloadProfile(),
         new TikTokDownloadProfile(),
+        new SnapchatDownloadProfile(),
         new AnilifeDownloadProfile(),
         new LinkkfDownloadProfile()
     };

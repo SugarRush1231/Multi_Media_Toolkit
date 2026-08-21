@@ -5,6 +5,7 @@ static class Program
     private const string SingleInstanceMutexName = @"Local\MultiMediaToolkit.SingleInstance";
     private const string ActivateExistingEventName = @"Local\MultiMediaToolkit.ActivateExisting";
     internal static bool StartedAfterUpdate { get; private set; }
+    internal static bool StartedAfterFailedUpdate { get; private set; }
 
     /// <summary>
     ///  The main entry point for the application.
@@ -14,6 +15,8 @@ static class Program
     {
         StartedAfterUpdate = args.Any(arg =>
             arg.Equals("/updated", StringComparison.OrdinalIgnoreCase));
+        StartedAfterFailedUpdate = args.Any(arg =>
+            arg.Equals("/updatefailed", StringComparison.OrdinalIgnoreCase));
 
         using var activateExistingEvent = new EventWaitHandle(
             false,
@@ -24,7 +27,7 @@ static class Program
         bool ownsSingleInstance;
         try
         {
-            int waitMilliseconds = StartedAfterUpdate ? 15000 : 0;
+            int waitMilliseconds = StartedAfterUpdate || StartedAfterFailedUpdate ? 15000 : 0;
             ownsSingleInstance = singleInstanceMutex.WaitOne(waitMilliseconds);
         }
         catch (AbandonedMutexException)

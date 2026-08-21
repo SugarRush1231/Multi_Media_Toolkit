@@ -14,6 +14,7 @@ publish/
 ffmpeg.exe
 ffprobe.exe
 yt-dlp.exe
+deno.exe
 
 # Testing
 TestResults/

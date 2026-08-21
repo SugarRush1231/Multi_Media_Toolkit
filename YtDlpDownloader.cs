@@ -551,6 +551,37 @@ namespace YoutubeDownloader
                 }
             }
 
+            if (result.Success &&
+                siteProfile.SiteKey == "Snapchat" &&
+                IsHlsPlaylistFile(result.DownloadedFilePath))
+            {
+                var urlResult = await RunYtDlpProcessAsync(
+                    $"{commonArguments}--get-url {QuoteProcessArgument(sourcePageUrl)}");
+                string resolvedMediaUrl = GetLastHttpUrl(urlResult.StandardOutput);
+                if (!urlResult.Success || !IsSafeResolvedMediaUrl(resolvedMediaUrl, sourcePageUrl))
+                {
+                    throw new Exception("Snapchat 재생 주소를 가져오지 못했습니다.");
+                }
+
+                string invalidPlaylistPath = result.DownloadedFilePath;
+                string snapchatFileName = GetPreferredFileName(Path.GetFileNameWithoutExtension(invalidPlaylistPath));
+                CleanupManager.DeleteTemporaryPath(invalidPlaylistPath);
+
+                var snapchatHeaders = headers != null
+                    ? new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                snapchatHeaders["Referer"] = sourcePageUrl;
+                snapchatHeaders["Origin"] = "https://www.snapchat.com";
+
+                return await DownloadM3u8WithFFmpegAsync(
+                    resolvedMediaUrl,
+                    saveDirectory,
+                    browser,
+                    token,
+                    snapchatHeaders,
+                    snapchatFileName);
+            }
+
             if (result.Success)
             {
                 if (DownloadSubtitles)
@@ -708,6 +739,31 @@ namespace YoutubeDownloader
             return errorOutput.Contains("Invalid argument", StringComparison.OrdinalIgnoreCase)
                 || errorOutput.Contains("Errno 22", StringComparison.OrdinalIgnoreCase)
                 || errorOutput.Contains("unable to open for writing", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsHlsPlaylistFile(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath)) return false;
+
+            try
+            {
+                using var reader = new StreamReader(filePath);
+                return string.Equals(reader.ReadLine()?.Trim(), "#EXTM3U", StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string GetLastHttpUrl(string output)
+        {
+            if (string.IsNullOrWhiteSpace(output)) return "";
+
+            return output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Trim())
+                .LastOrDefault(line => Uri.TryCreate(line, UriKind.Absolute, out Uri? uri) &&
+                    (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)) ?? "";
         }
 
         private static bool YtDlpReportedExistingFile(string standardOutput, string errorOutput)

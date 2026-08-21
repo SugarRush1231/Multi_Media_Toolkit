@@ -14,6 +14,8 @@ $CertPath = "$ProjectDir\MMT_Cert.pfx"
 $CertPassword = "1234"
 $SignToolPath = "C:\Program Files (x86)\Microsoft SDKs\ClickOnce\SignTool\signtool.exe"
 $DistDir = "$ProjectDir\dist"
+$DenoPath = "$ProjectDir\deno.exe"
+$InstalledDenoPath = Join-Path $env:LOCALAPPDATA "YoutubeDownloader\deno.exe"
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Multi Media Toolkit Build Pipeline" -ForegroundColor Cyan
@@ -31,16 +33,22 @@ Write-Host "  Build OK!" -ForegroundColor Green
 
 # --- 2/3: Sign EXE ---
 Write-Host "`n[2/3] Signing EXE..." -ForegroundColor Yellow
-if (!(Test-Path $CertPath)) {
-    Write-Host "Certificate not found: $CertPath" -ForegroundColor Red
-    exit 1
+$CanSign = (Test-Path $CertPath) -and (Test-Path $SignToolPath)
+if ($CanSign) {
+    & $SignToolPath sign /f $CertPath /p $CertPassword /fd SHA256 $ExePath
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Signing FAILED!" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  EXE Signed!" -ForegroundColor Green
+} else {
+    Write-Host "  Certificate not found. Continuing without signing." -ForegroundColor DarkYellow
 }
-& $SignToolPath sign /f $CertPath /p $CertPassword /fd SHA256 $ExePath
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Signing FAILED!" -ForegroundColor Red
-    exit 1
+
+if (!(Test-Path $DenoPath) -and (Test-Path $InstalledDenoPath)) {
+    Write-Host "  Preparing bundled Deno..." -ForegroundColor Yellow
+    Copy-Item -LiteralPath $InstalledDenoPath -Destination $DenoPath
 }
-Write-Host "  EXE Signed!" -ForegroundColor Green
 
 # --- 3/3: Inno Setup ---
 Write-Host "`n[3/3] Creating installer..." -ForegroundColor Yellow
@@ -61,10 +69,12 @@ if ($InnoCompiler) {
     & $InnoCompiler "$ProjectDir\installer_script.iss"
 
     $SetupExe = Get-ChildItem "$DistDir\MMT_Setup_*.exe" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($SetupExe) {
+    if ($SetupExe -and $CanSign) {
         Write-Host "  Signing installer: $($SetupExe.Name)" -ForegroundColor Yellow
         & $SignToolPath sign /f $CertPath /p $CertPassword /fd SHA256 $SetupExe.FullName
         Write-Host "  Installer Signed!" -ForegroundColor Green
+    } elseif ($SetupExe) {
+        Write-Host "  Installer created without signing." -ForegroundColor DarkYellow
     }
 } else {
     Write-Host "  Inno Setup not found. Skipping installer." -ForegroundColor Red

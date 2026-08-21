@@ -40,6 +40,14 @@ internal static class UserErrorFormatter
         if (ContainsAny(lower, "object reference not set", "nullreferenceexception"))
             return "프로그램 내부 처리 오류";
 
+        if (ContainsAny(lower,
+                "the process cannot access the file because it is being used by another process",
+                "cannot access the file because it is being used by another process"))
+            return "파일 사용 중";
+
+        if (ContainsAny(lower, "'' is not a valid url", "not a valid url", "invalid url", "url is empty"))
+            return "영상 주소 처리 오류";
+
         if (ContainsAny(lower, "sha-256", "sha256", "hash verification", "checksum"))
             return "업데이트 파일 검증 실패";
 
@@ -89,7 +97,10 @@ internal static class UserErrorFormatter
             message.Contains("재생 정보", StringComparison.OrdinalIgnoreCase))
             return "m3u8 추출 실패";
 
-        if (ContainsAny(lower, "unsupported url", "unable to extract", "extractor", "no video formats", "not supported"))
+        if (lower.Contains("unsupported url", StringComparison.Ordinal))
+            return "지원하지 않는 사이트";
+
+        if (ContainsAny(lower, "unable to extract", "extractor", "no video formats", "not supported"))
             return "사이트 구조 변경 가능성";
 
         if (ContainsAny(lower, "timed out", "timeout") || message.Contains("시간 초과", StringComparison.OrdinalIgnoreCase))
@@ -113,7 +124,7 @@ internal static class UserErrorFormatter
         return "원인 확인 필요";
     }
 
-    public static string GetHint(string cause)
+    public static string GetHint(string cause, string? relatedFilePath = null)
     {
         return cause switch
         {
@@ -123,6 +134,8 @@ internal static class UserErrorFormatter
             "저장 공간 부족" => "저장할 드라이브의 남은 공간을 확보하거나 저장 위치를 다른 드라이브로 변경해 주세요.",
             "파일 또는 폴더 권한 부족" => "저장 폴더에 쓸 권한이 없습니다. 다른 저장 위치를 선택하거나 폴더 권한을 확인해 주세요.",
             "프로그램 내부 처리 오류" => "처리 중 필요한 정보를 읽지 못했습니다. 같은 작업을 다시 시도하고, 반복되면 오류 원문과 URL을 제작자에게 알려주세요.",
+            "파일 사용 중" => FileLockInspector.GetUsageHint(relatedFilePath),
+            "영상 주소 처리 오류" => "다운로드 엔진에 올바른 영상 주소가 전달되지 않았습니다. 영상 URL을 다시 확인해도 반복되면 프로그램 수정이 필요합니다.",
             "업데이트 파일 검증 실패" => "받은 업데이트 파일이 올바르지 않아 설치를 중단했습니다. 잠시 후 업데이트를 다시 시도해 주세요.",
             "파일명 오류" => "게시물 제목이나 저장 경로에 사용할 수 없는 문자가 포함되었을 수 있습니다. 안전한 파일명으로 자동 재시도되지 않으면 저장 위치를 바꿔 다시 시도해 주세요.",
             "m3u8 추출 실패" => "영상 주소를 찾지 못했습니다. 사이트 구조가 바뀌었거나 플레이어 로딩이 막혔을 수 있습니다.",
@@ -131,6 +144,7 @@ internal static class UserErrorFormatter
             "로그인 필요" => "로그인이 필요한 영상일 수 있습니다. 로그인 후 다운 화면에서 로그인한 뒤 다시 시도해 주세요.",
             "사용 가능한 영상 포맷 없음" => "받을 수 있는 영상 포맷을 찾지 못했습니다. 로그인 권한, 라이브 상태, 다운로드 엔진 업데이트 여부를 확인해 주세요.",
             "애니라이프 재생 방식 변경" => "애니라이프가 외부 다운로드 요청에 영상 키를 제공하지 않는 방식으로 바뀌었습니다. 주소나 인터넷 문제가 아니며 사이트 대응 업데이트가 필요합니다.",
+            "지원하지 않는 사이트" => "현재 버전에서 지원하지 않는 사이트이거나 영상 주소를 자동으로 찾지 못했습니다.",
             "사이트 구조 변경 가능성" => "현재 주소를 지원하지 않거나 사이트 구조가 바뀌었을 수 있습니다. 주소가 영상 페이지인지 확인한 뒤 다시 시도해 주세요.",
             "네트워크 시간 초과" => "사이트 응답이 느리거나 네트워크가 불안정합니다. 잠시 뒤 다시 시도해 주세요.",
             "네트워크 연결 오류" => "인터넷 연결 또는 사이트 접속 상태를 확인한 뒤 다시 시도해 주세요.",
@@ -139,28 +153,51 @@ internal static class UserErrorFormatter
         };
     }
 
-    public static string Format(string context, Exception ex)
+    public static string GetInquiryGuidance(string cause)
+    {
+        if (cause == "지원하지 않는 사이트")
+        {
+            return "현재 버전에서 바로 해결할 수 없는 사이트입니다. [설정 > 문의하기]에 영상 URL과 오류 내용을 남겨 주세요. 사이트의 보안 수준과 구조에 따라 지원까지 며칠이 걸릴 수 있습니다.";
+        }
+
+        return cause is
+            "프로그램 내부 처리 오류" or
+            "파일 사용 중" or
+            "영상 주소 처리 오류" or
+            "사용 가능한 영상 포맷 없음" or
+            "애니라이프 재생 방식 변경" or
+            "사이트 구조 변경 가능성" or
+            "원인 확인 필요"
+                ? "현재 버전에서 자동으로 해결하기 어려운 오류입니다. [설정 > 문의하기]에 영상 URL과 오류 내용을 남겨 주세요. 더 빠르게 확인할 수 있으며, 수정 가능하면 빠르면 다음 날 업데이트에 반영할 수 있습니다."
+                : string.Empty;
+    }
+
+    public static string Format(string context, Exception ex, string? relatedFilePath = null)
     {
         string detail = Flatten(ex);
         string classificationText = string.IsNullOrWhiteSpace(detail)
             ? ex.GetType().FullName ?? ex.GetType().Name
             : $"{ex.GetType().FullName} {detail}";
-        return Format(context, detail, classificationText);
+        return Format(context, detail, classificationText, relatedFilePath);
     }
 
-    public static string Format(string context, string? detail)
+    public static string Format(string context, string? detail, string? relatedFilePath = null)
     {
-        return Format(context, detail, detail);
+        return Format(context, detail, detail, relatedFilePath);
     }
 
-    private static string Format(string context, string? detail, string? classificationText)
+    private static string Format(string context, string? detail, string? classificationText, string? relatedFilePath)
     {
         string original = string.IsNullOrWhiteSpace(detail) ? "상세 오류가 없습니다." : detail.Trim();
         if (original.Length > 1600)
             original = original.Substring(0, 1600) + "...";
 
         string cause = GetCause(classificationText);
-        return $"{context}\n\n원인: {cause}\n해결 방법: {GetHint(cause)}\n\n[기존 오류 원문]\n{original}";
+        string inquiryGuidance = GetInquiryGuidance(cause);
+        string inquiryGuide = string.IsNullOrWhiteSpace(inquiryGuidance)
+            ? string.Empty
+            : $"\n\n{inquiryGuidance}";
+        return $"{context}\n\n원인: {cause}\n해결 방법: {GetHint(cause, relatedFilePath)}{inquiryGuide}\n\n[기존 오류 원문]\n{original}";
     }
 
     private static string Flatten(Exception ex)

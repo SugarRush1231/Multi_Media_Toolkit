@@ -121,7 +121,8 @@ public partial class Form1 : Form
     private CancellationTokenSource? _ytDlpCts;
     private int _lastWidth = 800;
     private int _lastHeight = 600;
-    private const string CURR_VERSION = "1.3.4";
+    private const string CURR_VERSION = "1.3.5";
+    private static readonly string UpdateFailureMarkerPath = Path.Combine(SettingsManager.UserDataFolder, "update-error.txt");
 
     // [Twitter/X Private Extraction] Captured Data
     private string _capturedM3u8Url = "";
@@ -311,6 +312,12 @@ public partial class Form1 : Form
         
         // Program Files)
         Task.Run(() => CleanupOldInstallation());
+        Task.Run(async () =>
+        {
+            CleanupOldVersionedExecutables();
+            await Task.Delay(TimeSpan.FromSeconds(15));
+            CleanupStaleUpdateArtifacts();
+        });
 
         _youtube = new YoutubeClient();
         _downloadQueue = new ConcurrentQueue<DownloadJob>();
@@ -591,7 +598,7 @@ public partial class Form1 : Form
         this.FormClosing += Form1_FormClosing;
 
 
-        if (SettingsManager.Settings.AutoUpdateCheck)
+        if (SettingsManager.Settings.AutoUpdateCheck && !Program.StartedAfterFailedUpdate)
         {
             Shown += async (s, e) =>
             {
@@ -676,6 +683,78 @@ public partial class Form1 : Form
     {
         ResizeYtDlpQueueColumns();
         lvYtDlpQueue.Resize += (s, e) => ResizeYtDlpQueueColumns();
+
+        var copyUrlMenuItem = new ToolStripMenuItem("URL \uC8FC\uC18C \uBCF5\uC0AC")
+        {
+            ShortcutKeyDisplayString = "Ctrl+C"
+        };
+        copyUrlMenuItem.Click += (s, e) => CopySelectedYtDlpUrls();
+        contextMenuYtDlpRemove.Items.Insert(0, copyUrlMenuItem);
+
+        lvYtDlpQueue.KeyDown += (s, e) =>
+        {
+            if (!e.Control || e.KeyCode != Keys.C) return;
+            CopySelectedYtDlpUrls();
+            e.SuppressKeyPress = true;
+            e.Handled = true;
+        };
+
+        lvYtDlpQueue.MouseDown += (s, e) =>
+        {
+            if (e.Button != MouseButtons.Right) return;
+
+            ListViewItem? clickedItem = lvYtDlpQueue.GetItemAt(e.X, e.Y);
+            if (clickedItem == null)
+            {
+                foreach (ListViewItem item in lvYtDlpQueue.SelectedItems.Cast<ListViewItem>().ToList())
+                    item.Selected = false;
+                return;
+            }
+
+            if (!clickedItem.Selected)
+            {
+                foreach (ListViewItem item in lvYtDlpQueue.SelectedItems.Cast<ListViewItem>().ToList())
+                    item.Selected = false;
+                clickedItem.Selected = true;
+            }
+            clickedItem.Focused = true;
+        };
+
+        contextMenuYtDlpRemove.Opening += (s, e) =>
+        {
+            bool hasSelection = lvYtDlpQueue.SelectedItems.Count > 0;
+            copyUrlMenuItem.Enabled = hasSelection;
+            menuYtDlpRemoveSelected.Enabled = hasSelection;
+        };
+    }
+
+    private void CopySelectedYtDlpUrls()
+    {
+        string[] urls = lvYtDlpQueue.SelectedItems
+            .Cast<ListViewItem>()
+            .Select(item => item.SubItems.Count > 0 ? item.SubItems[0].Text.Trim() : item.Text.Trim())
+            .Where(url => !string.IsNullOrWhiteSpace(url))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (urls.Length == 0) return;
+
+        string text = string.Join(Environment.NewLine, urls);
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                Clipboard.SetText(text);
+                lblYtDlpStatus.Text = urls.Length == 1
+                    ? "URL \uC8FC\uC18C\uB97C \uBCF5\uC0AC\uD588\uC2B5\uB2C8\uB2E4."
+                    : $"{urls.Length}\uAC1C URL \uC8FC\uC18C\uB97C \uBCF5\uC0AC\uD588\uC2B5\uB2C8\uB2E4.";
+                return;
+            }
+            catch (System.Runtime.InteropServices.ExternalException) when (attempt < 2)
+            {
+                Thread.Sleep(30);
+            }
+        }
     }
 
     private void ResizeYtDlpQueueColumns()
@@ -1304,6 +1383,9 @@ public partial class Form1 : Form
         string webhookUrl = p1 + p2 + p3;
         string safeTitle = SanitizeInquiryText(inquiryTitle, 100, "제목 없음");
         string safeMessage = SanitizeInquiryText(message, 1000, "내용 없음");
+        string installId = string.IsNullOrWhiteSpace(SettingsManager.Settings.InstallId)
+            ? "미생성"
+            : SettingsManager.Settings.InstallId.Trim();
 
         var payload = new
         {
@@ -1311,6 +1393,7 @@ public partial class Form1 : Form
             allowed_mentions = new { parse = Array.Empty<string>() },
             content =
                 "**[사용자 문의]**\n" +
+                $"**기기 ID**: `{installId}`\n" +
                 $"**제목**: {safeTitle}\n\n" +
                 $"**문의 내용**\n{safeMessage}\n\n" +
                 $"**시각**: `{DateTime.Now:yyyy-MM-dd HH:mm:ss}`"
@@ -1960,6 +2043,7 @@ public partial class Form1 : Form
         if (lower.Contains("instagram.com")) return "Instagram";
         if (IsThreadsPlatformUrl(url)) return "Threads";
         if (lower.Contains("tiktok.com")) return "TikTok";
+        if (lower.Contains("snapchat.com")) return "Snapchat";
         if (IsKuaishouPlatformUrl(url)) return "Kuaishou";
         if (IsXPlatformUrl(url)) return "X";
         if (lower.Contains("anilife") || lower.Contains("gcdn.app")) return "Anilife";
@@ -2036,19 +2120,86 @@ public partial class Form1 : Form
             SettingsManager.Settings.SiteFolderOverrides.TryGetValue(site, out string? overridePath) &&
             !string.IsNullOrWhiteSpace(overridePath))
         {
-            Directory.CreateDirectory(overridePath);
-            return overridePath;
+            return EnsureWritableDownloadDirectory(overridePath);
         }
 
         if (SettingsManager.Settings.UseSiteFolderRules)
         {
             string sitePath = Path.Combine(basePath, site);
-            Directory.CreateDirectory(sitePath);
-            return sitePath;
+            return EnsureWritableDownloadDirectory(sitePath);
         }
 
-        Directory.CreateDirectory(basePath);
-        return basePath;
+        return EnsureWritableDownloadDirectory(basePath);
+    }
+
+    private static string EnsureWritableDownloadDirectory(string path)
+    {
+        if (TryPrepareWritableDirectory(path, out string preparedPath, out string errorMessage))
+            return preparedPath;
+
+        throw new InvalidOperationException(errorMessage);
+    }
+
+    private static bool TryPrepareWritableDirectory(string path, out string preparedPath, out string errorMessage)
+    {
+        preparedPath = "";
+        errorMessage = "";
+
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            errorMessage = "저장 폴더가 지정되지 않았습니다. 다른 저장 위치를 선택해 주세요.";
+            return false;
+        }
+
+        try
+        {
+            preparedPath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(path.Trim()));
+            Directory.CreateDirectory(preparedPath);
+
+            string probePath = Path.Combine(preparedPath, $".mmt_write_test_{Guid.NewGuid():N}.tmp");
+            using (var probe = new FileStream(
+                       probePath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       1,
+                       FileOptions.DeleteOnClose))
+            {
+                probe.WriteByte(0);
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException or IOException or UnauthorizedAccessException)
+        {
+            preparedPath = "";
+            string reason = ex is UnauthorizedAccessException
+                ? "이 폴더에 파일을 저장할 권한이 없습니다."
+                : ex is DriveNotFoundException or DirectoryNotFoundException
+                    ? "지정한 드라이브나 폴더를 찾을 수 없습니다."
+                    : "이 폴더를 저장 위치로 사용할 수 없습니다.";
+            errorMessage = $"{reason}\n다른 저장 위치를 선택해 주세요.\n\n경로: {path}";
+            return false;
+        }
+    }
+
+    private static string GetUniqueOutputPath(string desiredPath, bool directory = false)
+    {
+        string? parent = Path.GetDirectoryName(desiredPath);
+        string fileName = Path.GetFileName(desiredPath);
+        if (string.IsNullOrWhiteSpace(parent) || string.IsNullOrWhiteSpace(fileName)) return desiredPath;
+
+        string extension = directory ? "" : Path.GetExtension(fileName);
+        string baseName = directory ? fileName : Path.GetFileNameWithoutExtension(fileName);
+        string candidate = desiredPath;
+        int counter = 2;
+
+        while (File.Exists(candidate) || Directory.Exists(candidate))
+        {
+            candidate = Path.Combine(parent, $"{baseName}_{counter++}{extension}");
+        }
+
+        return candidate;
     }
 
     private static string BuildFileNameFromSettings(string site, string channel, string title, string quality)
@@ -2444,20 +2595,15 @@ public partial class Form1 : Form
         if (_denoReadyChecked && File.Exists(denoPath) && HasMzHeader(denoPath)) return;
 
         await _denoInstallSemaphore.WaitAsync(ct);
+        string tempSuffix = "." + Guid.NewGuid().ToString("N") + ".download";
+        string zipPath = denoPath + tempSuffix + ".zip";
+        string tempExePath = denoPath + tempSuffix;
         try
         {
             if (File.Exists(denoPath) && HasMzHeader(denoPath))
             {
-                try
-                {
-                    await ValidateDenoExecutableAsync(denoPath, ct);
-                    _denoReadyChecked = true;
-                    return;
-                }
-                catch
-                {
-                    try { File.Delete(denoPath); } catch { }
-                }
+                _denoReadyChecked = true;
+                return;
             }
             else if (File.Exists(denoPath))
             {
@@ -2466,11 +2612,6 @@ public partial class Form1 : Form
 
             string toolsDir = Path.GetDirectoryName(denoPath) ?? SettingsManager.UserDataFolder;
             Directory.CreateDirectory(toolsDir);
-
-            string zipPath = denoPath + ".zip.download";
-            string tempExePath = denoPath + ".download";
-            try { if (File.Exists(zipPath)) File.Delete(zipPath); } catch { }
-            try { if (File.Exists(tempExePath)) File.Delete(tempExePath); } catch { }
 
             SetYtDlpToolStatus("YouTube 보안 엔진 준비 중...");
             using (var client = new HttpClient())
@@ -2494,7 +2635,15 @@ public partial class Form1 : Form
                 denoEntry.ExtractToFile(tempExePath, overwrite: true);
             }
 
-            await ValidateDenoExecutableAsync(tempExePath, ct);
+            try
+            {
+                await ValidateDenoExecutableAsync(tempExePath, ct);
+            }
+            catch (Exception ex) when (IsTemporaryFileLock(ex))
+            {
+                await Task.Delay(1000, ct);
+                await ValidateDenoExecutableAsync(tempExePath, ct);
+            }
 
             if (File.Exists(denoPath))
                 File.Replace(tempExePath, denoPath, null, ignoreMetadataErrors: true);
@@ -2508,8 +2657,8 @@ public partial class Form1 : Form
         }
         finally
         {
-            try { File.Delete(denoPath + ".zip.download"); } catch { }
-            try { File.Delete(denoPath + ".download"); } catch { }
+            try { File.Delete(zipPath); } catch { }
+            try { File.Delete(tempExePath); } catch { }
             _denoInstallSemaphore.Release();
         }
     }
@@ -2536,6 +2685,12 @@ public partial class Form1 : Form
 
         if (process.ExitCode != 0 || !output.Contains("deno", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Downloaded deno.exe validation failed: " + error.Trim());
+    }
+
+    private static bool IsTemporaryFileLock(Exception ex)
+    {
+        return ex is IOException ||
+               ex is Win32Exception win32 && (win32.NativeErrorCode == 32 || win32.NativeErrorCode == 33);
     }
 
     private static string GetYtDlpJavaScriptRuntimeArguments()
@@ -3729,10 +3884,15 @@ public partial class Form1 : Form
             return;
         }
 
-        if (SettingsManager.Settings.ShowNotifications)
-        {
-            notifyIconApp.ShowBalloonTip(3000, title, text, ToolTipIcon.None);
-        }
+        if (!SettingsManager.Settings.ShowNotifications) return;
+
+        bool widgetModeActive = _downloadWidgetForm != null &&
+                                !_downloadWidgetForm.IsDisposed &&
+                                _downloadWidgetForm.Visible &&
+                                !Visible;
+        if (widgetModeActive) return;
+
+        notifyIconApp.ShowBalloonTip(3000, title, text, ToolTipIcon.None);
     }
 
     private DialogResult ShowCenteredMessage(string text)
@@ -4108,17 +4268,11 @@ public partial class Form1 : Form
         {
             if (siteName == "콰이쇼우")
             {
-                DialogResult inquiryResult = ShowCenteredMessage(
-                    "콰이쇼우 보안 확인을 마친 뒤 좌측 상단 [즉시 다운로드]를 다시 눌러 주세요.\n대부분 영상이 표시되지만, 간혹 영상이 보이지 않아도 다운로드는 가능할 수 있습니다.\n\n이미 보안 확인을 완료했는데도 계속 실패한다면 제작자에게 문의하시겠습니까?",
+                ShowCenteredMessage(
+                    "콰이쇼우 보안 확인을 마친 뒤 좌측 상단 [즉시 다운로드]를 다시 눌러 주세요.\n대부분 영상이 표시되지만, 간혹 영상이 보이지 않아도 다운로드는 가능할 수 있습니다.\n\n계속 실패하면 [설정 > 문의하기]에 영상 URL과 오류 내용을 남겨 주세요. 더 빠르게 확인할 수 있으며, 수정 가능하면 빠르면 다음 날 업데이트에 반영할 수 있습니다.",
                     "콰이쇼우 다운로드 확인",
-                    MessageBoxButtons.YesNo,
+                    MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
-                if (inquiryResult == DialogResult.Yes)
-                {
-                    await ShowInquiryDialogAsync(
-                        "콰이쇼우 다운로드 문제",
-                        $"영상 주소: {url}\r\n\r\n보안 확인을 완료했지만 다운로드되지 않습니다.\r\n추가로 확인한 내용을 적어 주세요.");
-                }
                 return true;
             }
 
@@ -4271,12 +4425,12 @@ public partial class Form1 : Form
         tglInstaPrivateMode.Checked = true;
     }
 
-    private static string GetDownloadFailureHint(string cause)
+    private static string GetDownloadFailureHint(string cause, string? relatedFilePath = null)
     {
-        return UserErrorFormatter.GetHint(cause);
+        return UserErrorFormatter.GetHint(cause, relatedFilePath);
     }
 
-    private static string BuildDownloadFailureMessage(string url, Exception ex)
+    private static string BuildDownloadFailureMessage(string url, Exception ex, string? relatedFilePath = null)
     {
         string cause = GetDownloadFailureCause(ex);
         string detail = CleanErrorDetailForDisplay(FlattenExceptionMessage(ex).Trim());
@@ -4285,7 +4439,11 @@ public partial class Form1 : Form
             detail = detail.Substring(0, 1200) + "...";
         }
 
-        return $"다운로드 실패 원인: {cause}\n\n{GetDownloadFailureHint(cause)}\n\nURL: {url}\n\n상세 오류:\n{detail}";
+        string inquiryGuidance = UserErrorFormatter.GetInquiryGuidance(cause);
+        string inquirySection = string.IsNullOrWhiteSpace(inquiryGuidance)
+            ? string.Empty
+            : $"\n\n문의 안내:\n{inquiryGuidance}";
+        return $"다운로드 실패 원인: {cause}\n\n{GetDownloadFailureHint(cause, relatedFilePath)}{inquirySection}\n\nURL: {url}\n\n상세 오류:\n{detail}";
     }
 
     private static string CleanErrorDetailForDisplay(string detail)
@@ -4475,11 +4633,19 @@ public partial class Form1 : Form
             return;
         }
 
+        string downloadUrl = NormalizeYouTubeSingleVideoUrl(
+            !string.IsNullOrWhiteSpace(txtUrl.Text) ? txtUrl.Text.Trim() : _currentUrl);
+        if (!IsYouTubeSingleVideoInput(downloadUrl))
+        {
+            ShowCenteredMessage("다운로드할 YouTube 영상 주소를 다시 확인해 주세요.", "알림", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         var selectedOption = (QualityOption)cmbQuality.SelectedItem;
         
         string outputPath = "";
 
-        if (IsYoutubeUrlInFlight(_currentUrl))
+        if (IsYoutubeUrlInFlight(downloadUrl))
         {
             ShowCenteredMessage("이미 다운로드 중인 영상입니다. 완료된 뒤 다시 누르면 새 파일로 받을 수 있습니다.", "알림", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
@@ -4489,7 +4655,16 @@ public partial class Form1 : Form
         if (!string.IsNullOrWhiteSpace(SettingsManager.Settings.DefaultDownloadFolder) || SettingsManager.Settings.UseSiteFolderRules || SettingsManager.Settings.UseCustomSiteFolders)
         {
             string ext = selectedOption.IsVideo ? "mp4" : selectedOption.Id.Replace("best_", "");
-            string saveDirectory = GetDownloadSaveDirectory(_currentUrl, !selectedOption.IsVideo);
+            string saveDirectory;
+            try
+            {
+                saveDirectory = GetDownloadSaveDirectory(downloadUrl, !selectedOption.IsVideo);
+            }
+            catch (Exception ex)
+            {
+                ShowCenteredMessage(ex.Message, "저장 위치 확인", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
             string channel = _currentVideo?.Author.ChannelTitle ?? "";
             string baseFileName = BuildFileNameFromSettings("YouTube", channel, _customTitle, selectedOption.Title);
             outputPath = Path.Combine(saveDirectory, $"{baseFileName}.{ext}");
@@ -4530,7 +4705,7 @@ public partial class Form1 : Form
         var job = new DownloadJob
         {
             Id = Guid.NewGuid().ToString(),
-            Url = _currentUrl,
+            Url = downloadUrl,
             Video = _currentVideo,
             Manifest = _streamManifest,
             Option = selectedOption,
@@ -4602,7 +4777,17 @@ public partial class Form1 : Form
             return false;
         }
 
-        string savePath = GetDownloadSaveDirectory(url, SettingsManager.Settings.DefaultVideoQuality == "MP3");
+        string savePath;
+        try
+        {
+            savePath = GetDownloadSaveDirectory(url, SettingsManager.Settings.DefaultVideoQuality == "MP3");
+        }
+        catch (Exception ex)
+        {
+            rejectReason = ex.Message;
+            lblYtDlpStatus.Text = rejectReason;
+            return false;
+        }
         if (string.IsNullOrWhiteSpace(savePath) || !Directory.Exists(savePath))
         {
             if (allowFolderPrompt)
@@ -5062,6 +5247,7 @@ public partial class Form1 : Form
             else if (lowerUrlSuccess.Contains("instagram")) platformSuccess = "Instagram";
             else if (IsThreadsPlatformUrl(url)) platformSuccess = "Threads";
             else if (lowerUrlSuccess.Contains("tiktok")) platformSuccess = "TikTok";
+            else if (lowerUrlSuccess.Contains("snapchat")) platformSuccess = "Snapchat";
             else if (IsKuaishouPlatformUrl(url)) platformSuccess = "Kuaishou";
             else if (lowerUrlSuccess.Contains("pinterest")) platformSuccess = "Pinterest";
             else if (lowerUrlSuccess.Contains("anilife")) platformSuccess = "Anilife";
@@ -5532,6 +5718,7 @@ public partial class Form1 : Form
             else if (lowerUrlSuccess.Contains("instagram")) platformSuccess = "Instagram";
             else if (IsThreadsPlatformUrl(url)) platformSuccess = "Threads";
             else if (lowerUrlSuccess.Contains("tiktok")) platformSuccess = "TikTok";
+            else if (lowerUrlSuccess.Contains("snapchat")) platformSuccess = "Snapchat";
             else if (IsKuaishouPlatformUrl(url)) platformSuccess = "Kuaishou";
             else if (lowerUrlSuccess.Contains("pinterest")) platformSuccess = "Pinterest";
             else if (lowerUrlSuccess.Contains("anilife")) platformSuccess = "Anilife";
@@ -5805,8 +5992,35 @@ public partial class Form1 : Form
     {
         _isDownloading = true;
 
-        await EnsureFFmpegAsync();
-        Xabe.FFmpeg.FFmpeg.SetExecutablesPath(Path.GetDirectoryName(SettingsManager.GetFFmpegPath()));
+        try
+        {
+            await EnsureFFmpegAsync();
+            Xabe.FFmpeg.FFmpeg.SetExecutablesPath(Path.GetDirectoryName(SettingsManager.GetFFmpegPath()));
+        }
+        catch (Exception ex)
+        {
+            while (_downloadQueue.TryDequeue(out var pendingJob))
+            {
+                if (lvQueue.Items.Contains(pendingJob.ListViewItem))
+                    pendingJob.ListViewItem.SubItems[2].Text = "실패: 필수 도구 준비 오류";
+                pendingJob.JobCts.Dispose();
+            }
+
+            lblStatus.Text = "다운로드를 시작하지 못했습니다. 필수 도구를 확인해 주세요.";
+            pbYoutube.Value = 0;
+            _isDownloading = false;
+            _downloadWidgetForm?.SetProgress(null);
+            _downloadWidgetForm?.SetBusy(false);
+            _downloadWidgetForm?.SetStatus("필수 도구를 준비하지 못했습니다. 앱에서 오류 내용을 확인해 주세요.");
+            Notify("다운로드 실패", "YouTube 다운로드 필수 도구를 준비하지 못했습니다.");
+            ShowCenteredMessage(
+                UserErrorFormatter.Format("YouTube 다운로드에 필요한 필수 도구를 준비하지 못했습니다.", ex),
+                "필수 도구 오류",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            ReportError("유튜브 다운로더", "필수 도구 준비", "YouTube 다운로드 시작 전 FFmpeg 준비 실패", ex);
+            return;
+        }
 
         while (_downloadQueue.TryDequeue(out var job))
         {
@@ -5972,7 +6186,7 @@ public partial class Form1 : Form
                 string cause = GetDownloadFailureCause(ex);
                 string failedUrl = !string.IsNullOrWhiteSpace(job.Url) ? job.Url : job.Video?.Url ?? "";
                 string failedTitle = !string.IsNullOrWhiteSpace(job.CustomFileName) ? job.CustomFileName : job.Video?.Title ?? "영상";
-                string failureMessage = BuildDownloadFailureMessage(failedUrl, ex);
+                string failureMessage = BuildDownloadFailureMessage(failedUrl, ex, job.OutputPath);
                 if (!this.IsDisposed && !this.Disposing && lvQueue.Items.Contains(job.ListViewItem))
                 {
                     this.Invoke((MethodInvoker)delegate {
@@ -6148,6 +6362,8 @@ public partial class Form1 : Form
         string ext = isAudioOnly ? job.Option.Id.Replace("best_", "") : "mp4";
             string outputTemplate = job.OutputPath;
             string sourceUrl = !string.IsNullOrWhiteSpace(job.Url) ? job.Url : job.Video?.Url ?? "";
+        if (!IsYouTubeSingleVideoInput(sourceUrl))
+            throw new InvalidOperationException("다운로드할 YouTube 영상 주소가 비어 있거나 올바르지 않습니다.");
         if (job.Video == null && IsFallbackYouTubeTitle(job.CustomFileName))
         {
             string directory = Path.GetDirectoryName(job.OutputPath) ?? GetDownloadSaveDirectory(sourceUrl, isAudioOnly);
@@ -6369,8 +6585,14 @@ public partial class Form1 : Form
         string outDir = txtWebMOutput.Text;
         if (string.IsNullOrWhiteSpace(outDir)) outDir = SettingsManager.Settings.DefaultDownloadFolder;
         if (string.IsNullOrWhiteSpace(outDir)) outDir = Path.GetDirectoryName(inputFile) ?? "";
-        
-        if (!Directory.Exists(outDir)) Directory.CreateDirectory(outDir);
+
+        if (!TryPrepareWritableDirectory(outDir, out string preparedOutDir, out string folderError))
+        {
+            lblWebMStatus.Text = "저장 위치를 확인해 주세요.";
+            ShowCenteredMessage(folderError, "저장 위치 확인", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        outDir = preparedOutDir;
 
         string fileNameNoExt = Path.GetFileNameWithoutExtension(inputFile);
         string outputFile = "";
@@ -6380,49 +6602,47 @@ public partial class Form1 : Form
 
         if (format.Contains("WebM"))
         {
-            outputFile = Path.Combine(outDir, fileNameNoExt + "_converted.webm");
+            outputFile = GetUniqueOutputPath(Path.Combine(outDir, fileNameNoExt + "_converted.webm"));
             args = $"-i \"{inputFile}\" -c:v libvpx-vp9 -crf 30 -b:v 0 -c:a libopus \"{outputFile}\" -y";
         }
         else if (format.Contains("MOV"))
         {
-            outputFile = Path.Combine(outDir, fileNameNoExt + ".mov");
+            outputFile = GetUniqueOutputPath(Path.Combine(outDir, fileNameNoExt + ".mov"));
             args = $"-i \"{inputFile}\" -c:v libx264 -crf 18 -c:a aac -b:a 192k \"{outputFile}\" -y";
         }
         else if (format.Contains("MKV"))
         {
-            outputFile = Path.Combine(outDir, fileNameNoExt + ".mkv");
+            outputFile = GetUniqueOutputPath(Path.Combine(outDir, fileNameNoExt + ".mkv"));
             args = $"-i \"{inputFile}\" -c:v libx264 -crf 18 -c:a aac -b:a 192k \"{outputFile}\" -y";
         }
         else if (format.Contains("AVI"))
         {
-            outputFile = Path.Combine(outDir, fileNameNoExt + ".avi");
+            outputFile = GetUniqueOutputPath(Path.Combine(outDir, fileNameNoExt + ".avi"));
             // AVI prefers mp3 or pcm common for old players, but h264/mp3 is a good modern balance
             args = $"-i \"{inputFile}\" -c:v libx264 -crf 18 -c:a libmp3lame -b:a 192k \"{outputFile}\" -y";
         }
         else if (format.Contains("WMV"))
         {
-            outputFile = Path.Combine(outDir, fileNameNoExt + ".wmv");
+            outputFile = GetUniqueOutputPath(Path.Combine(outDir, fileNameNoExt + ".wmv"));
             args = $"-i \"{inputFile}\" -c:v wmv2 -b:v 5M -c:a wmav2 -b:a 128k \"{outputFile}\" -y";
         }
         else if (format.Contains("GIF"))
         {
-            outputFile = Path.Combine(outDir, fileNameNoExt + ".gif");
+            outputFile = GetUniqueOutputPath(Path.Combine(outDir, fileNameNoExt + ".gif"));
             // Reduced scale to 480p and fps to 12 to prevent hangs on large files
             args = $"-i \"{inputFile}\" -vf \"fps=12,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse\" \"{outputFile}\" -y";
         }
         else if (format.Contains("JPG Sequence"))
         {
             isSequence = true;
-            sequenceDir = Path.Combine(outDir, fileNameNoExt + "_jpg_seq");
-            if (!Directory.Exists(sequenceDir)) Directory.CreateDirectory(sequenceDir);
+            sequenceDir = GetUniqueOutputPath(Path.Combine(outDir, fileNameNoExt + "_jpg_seq"), directory: true);
             outputFile = Path.Combine(sequenceDir, "frame_%04d.jpg");
             args = $"-i \"{inputFile}\" -qscale:v 2 \"{outputFile}\" -y";
         }
         else if (format.Contains("PNG Sequence"))
         {
             isSequence = true;
-            sequenceDir = Path.Combine(outDir, fileNameNoExt + "_png_seq");
-            if (!Directory.Exists(sequenceDir)) Directory.CreateDirectory(sequenceDir);
+            sequenceDir = GetUniqueOutputPath(Path.Combine(outDir, fileNameNoExt + "_png_seq"), directory: true);
             outputFile = Path.Combine(sequenceDir, "frame_%04d.png");
             args = $"-i \"{inputFile}\" \"{outputFile}\" -y";
         }
@@ -6437,10 +6657,19 @@ public partial class Form1 : Form
  
             await EnsureFFmpegAsync();
             Xabe.FFmpeg.FFmpeg.SetExecutablesPath(Path.GetDirectoryName(SettingsManager.GetFFmpegPath()));
+
+            if (isSequence) Directory.CreateDirectory(sequenceDir);
  
             CleanupManager.RegisterFile(isSequence ? sequenceDir : outputFile);
 
-            await RunFFmpegWithProgress(args, inputFile, pbWebM, lblWebMStatus, _webmCts.Token);
+            await RunFFmpegWithProgress(
+                args,
+                inputFile,
+                pbWebM,
+                lblWebMStatus,
+                _webmCts.Token,
+                isSequence ? sequenceDir : outputFile,
+                isSequence);
   
             CleanupManager.UnregisterFile(isSequence ? sequenceDir : outputFile);
 
@@ -6489,7 +6718,7 @@ public partial class Form1 : Form
             });
             Notify("변환 실패", "변환 중 오류가 발생했습니다.");
             ShowCenteredMessage(
-                UserErrorFormatter.Format("포맷 변환 중 오류가 발생했습니다.", ex),
+                UserErrorFormatter.Format("포맷 변환 중 오류가 발생했습니다.", ex, inputFile),
                 "포맷 변환 오류",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
@@ -6554,10 +6783,16 @@ public partial class Form1 : Form
         string outDir = txtCodecOutput.Text;
         if (string.IsNullOrWhiteSpace(outDir)) outDir = SettingsManager.Settings.DefaultDownloadFolder;
         if (string.IsNullOrWhiteSpace(outDir)) outDir = Path.GetDirectoryName(inputFile) ?? "";
-        
-        if (!Directory.Exists(outDir)) Directory.CreateDirectory(outDir);
 
-        string outputFile = Path.Combine(outDir, Path.GetFileNameWithoutExtension(inputFile) + "_fixed.mp4");
+        if (!TryPrepareWritableDirectory(outDir, out string preparedOutDir, out string folderError))
+        {
+            lblCodecStatus.Text = "저장 위치를 확인해 주세요.";
+            ShowCenteredMessage(folderError, "저장 위치 확인", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        outDir = preparedOutDir;
+
+        string outputFile = GetUniqueOutputPath(Path.Combine(outDir, Path.GetFileNameWithoutExtension(inputFile) + "_fixed.mp4"));
 
         try
         {
@@ -6573,7 +6808,7 @@ public partial class Form1 : Form
             Xabe.FFmpeg.FFmpeg.SetExecutablesPath(Path.GetDirectoryName(SettingsManager.GetFFmpegPath()));
  
             string args = $"-i \"{inputFile}\" -c:v libx264 -preset fast -crf 18 -r 30 -pix_fmt yuv420p -c:a aac -b:a 192k \"{outputFile}\" -y";
-            await RunFFmpegWithProgress(args, inputFile, pbCodec, lblCodecStatus, _codecCts.Token);
+            await RunFFmpegWithProgress(args, inputFile, pbCodec, lblCodecStatus, _codecCts.Token, outputFile);
   
             CleanupManager.UnregisterFile(outputFile);
 
@@ -6613,7 +6848,7 @@ public partial class Form1 : Form
             });
             Notify("변환 실패", "코덱 변환 중 오류가 발생했습니다.");
             ShowCenteredMessage(
-                UserErrorFormatter.Format("Pr/AE 호환 코덱 변환 중 오류가 발생했습니다.", ex),
+                UserErrorFormatter.Format("Pr/AE 호환 코덱 변환 중 오류가 발생했습니다.", ex, inputFile),
                 "코덱 변환 오류",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
@@ -6683,9 +6918,15 @@ public partial class Form1 : Form
         if (string.IsNullOrWhiteSpace(outDir)) outDir = SettingsManager.Settings.DefaultDownloadFolder;
         if (string.IsNullOrWhiteSpace(outDir)) outDir = Path.GetDirectoryName(inputFile) ?? "";
 
-        if (!Directory.Exists(outDir)) Directory.CreateDirectory(outDir);
+        if (!TryPrepareWritableDirectory(outDir, out string preparedOutDir, out string folderError))
+        {
+            lblAudioStatus.Text = "저장 위치를 확인해 주세요.";
+            ShowCenteredMessage(folderError, "저장 위치 확인", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        outDir = preparedOutDir;
 
-        string outputFile = Path.Combine(outDir, Path.GetFileNameWithoutExtension(inputFile) + $"_converted.{ext}");
+        string outputFile = GetUniqueOutputPath(Path.Combine(outDir, Path.GetFileNameWithoutExtension(inputFile) + $"_converted.{ext}"));
 
         try
         {
@@ -6710,7 +6951,7 @@ public partial class Form1 : Form
                 _ => $"-i \"{inputFile}\" -vn \"{outputFile}\" -y"
             };
  
-            await RunFFmpegWithProgress(args, inputFile, pbAudio, lblAudioStatus, _audioCts.Token);
+            await RunFFmpegWithProgress(args, inputFile, pbAudio, lblAudioStatus, _audioCts.Token, outputFile);
   
             CleanupManager.UnregisterFile(outputFile);
 
@@ -6750,7 +6991,7 @@ public partial class Form1 : Form
             });
             Notify("변환 실패", "변환 중 오류가 발생했습니다.");
             ShowCenteredMessage(
-                UserErrorFormatter.Format("오디오 변환 중 오류가 발생했습니다.", ex),
+                UserErrorFormatter.Format("오디오 변환 중 오류가 발생했습니다.", ex, inputFile),
                 "오디오 변환 오류",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
@@ -6797,6 +7038,28 @@ public partial class Form1 : Form
     private void SaveCurrentSettings(bool showSuccessMsg)
     {
         string newPath = txtDownloadFolder.Text.Trim();
+        if (!TryPrepareWritableDirectory(newPath, out string preparedPath, out string folderError))
+        {
+            ShowCenteredMessage(folderError, "저장 위치 확인", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        newPath = preparedPath;
+        txtDownloadFolder.Text = preparedPath;
+
+        if (chkUseCustomSiteFolders?.Checked == true &&
+            txtSiteFolderOverride != null &&
+            !string.IsNullOrWhiteSpace(txtSiteFolderOverride.Text))
+        {
+            if (!TryPrepareWritableDirectory(txtSiteFolderOverride.Text, out string preparedOverride, out string overrideError))
+            {
+                ShowCenteredMessage(overrideError, "사이트별 저장 위치 확인", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            txtSiteFolderOverride.Text = preparedOverride;
+        }
+
         SettingsManager.Settings.DefaultDownloadFolder = newPath;
         SettingsManager.Settings.ShowNotifications = chkShowNotifications.Checked;
         SettingsManager.Settings.AutoOpenFolder = chkAutoOpenFolder.Checked;
@@ -6872,7 +7135,7 @@ public partial class Form1 : Form
 
     private void ConfigureUpdatedAppForeground()
     {
-        if (!Program.StartedAfterUpdate) return;
+        if (!Program.StartedAfterUpdate && !Program.StartedAfterFailedUpdate) return;
 
         TopMost = true;
         Shown += (s, e) =>
@@ -6882,6 +7145,27 @@ public partial class Form1 : Form
             BringToFront();
             Activate();
             SetForegroundWindow(Handle);
+
+            if (Program.StartedAfterFailedUpdate)
+            {
+                string reason = "설치된 프로그램 파일을 다른 프로그램이 사용 중이어서 교체하지 못했습니다.";
+                try
+                {
+                    if (File.Exists(UpdateFailureMarkerPath))
+                    {
+                        string savedReason = File.ReadAllText(UpdateFailureMarkerPath, Encoding.UTF8).Trim();
+                        if (!string.IsNullOrWhiteSpace(savedReason)) reason = savedReason;
+                        File.Delete(UpdateFailureMarkerPath);
+                    }
+                }
+                catch { }
+
+                ShowCenteredMessage(
+                    $"업데이트를 완료하지 못해 기존 버전을 다시 실행했습니다.\n\n{reason}\n\n안내된 프로그램을 종료한 뒤 업데이트를 다시 시도해 주세요.\n\n계속 안 되면 프로그램 설정의 [다른 버전 받기]에서 최신 버전을 내려받아 수동으로 설치할 수 있습니다.",
+                    "업데이트 설치 실패",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
 
             var releaseTopMostTimer = new System.Windows.Forms.Timer { Interval = 1500 };
             releaseTopMostTimer.Tick += (timerSender, timerEvent) =>
@@ -7041,7 +7325,8 @@ public partial class Form1 : Form
                                 updateProgress?.Dispose();
                                 updateProgress = null;
                                 ShowCenteredMessage(
-                                    UserErrorFormatter.Format("업데이트 파일을 다운로드하거나 실행하지 못했습니다.", ex),
+                                    UserErrorFormatter.Format("업데이트 파일을 다운로드하거나 실행하지 못했습니다.", ex) +
+                                    "\n\n계속 안 되면 프로그램 설정의 [다른 버전 받기]에서 최신 버전을 내려받아 수동으로 설치할 수 있습니다.",
                                     "업데이트 실패",
                                     MessageBoxButtons.OK,
                                     MessageBoxIcon.Error);
@@ -7077,7 +7362,8 @@ public partial class Form1 : Form
                 updateProgress?.Dispose();
                 updateProgress = null;
                 ShowCenteredMessage(
-                    UserErrorFormatter.Format("새 버전을 확인하지 못했습니다.", ex),
+                    UserErrorFormatter.Format("새 버전을 확인하지 못했습니다.", ex) +
+                    "\n\n프로그램 설정의 [다른 버전 받기]에서 최신 버전을 직접 내려받을 수도 있습니다.",
                     "업데이트 확인 오류",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
@@ -7097,7 +7383,14 @@ public partial class Form1 : Form
     // HELPER CLASSES AND METHODS
     // ============================================
 
-    private async Task RunFFmpegWithProgress(string args, string inputFile, ProgressBar pb, Label lbl, CancellationToken token)
+    private async Task RunFFmpegWithProgress(
+        string args,
+        string inputFile,
+        ProgressBar pb,
+        Label lbl,
+        CancellationToken token,
+        string expectedOutputPath,
+        bool outputIsDirectory = false)
     {
         double totalMilliseconds = 0;
 
@@ -7126,6 +7419,7 @@ public partial class Form1 : Form
         CleanupManager.RegisterProcess(proc);
 
         var regex = new System.Text.RegularExpressions.Regex(@"time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})");
+        var errorTail = new Queue<string>();
         long lastUpdate = 0; // Performance throttle
 
         using (token.Register(() => { try { if (!proc.HasExited) proc.Kill(true); } catch { } }))
@@ -7136,6 +7430,9 @@ public partial class Form1 : Form
                     if (token.IsCancellationRequested) break;
                     string? line = await proc.StandardError.ReadLineAsync();
                     if (line == null) break;
+
+                    if (errorTail.Count >= 60) errorTail.Dequeue();
+                    errorTail.Enqueue(line);
 
                     if (totalMilliseconds > 0)
                     {
@@ -7178,6 +7475,25 @@ public partial class Form1 : Form
                 CleanupManager.UnregisterProcess(proc);
             }
             token.ThrowIfCancellationRequested();
+        }
+
+        if (proc.ExitCode != 0)
+        {
+            CleanupManager.DeleteTemporaryPath(expectedOutputPath);
+            string detail = string.Join(Environment.NewLine, errorTail);
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(detail)
+                    ? $"FFmpeg 처리가 실패했습니다. 종료 코드: {proc.ExitCode}"
+                    : $"FFmpeg 처리가 실패했습니다. 종료 코드: {proc.ExitCode}\n{detail}");
+        }
+
+        bool outputCreated = outputIsDirectory
+            ? Directory.Exists(expectedOutputPath) && Directory.EnumerateFiles(expectedOutputPath).Any(file => new FileInfo(file).Length > 0)
+            : File.Exists(expectedOutputPath) && new FileInfo(expectedOutputPath).Length > 0;
+        if (!outputCreated)
+        {
+            CleanupManager.DeleteTemporaryPath(expectedOutputPath);
+            throw new InvalidOperationException("FFmpeg 처리는 끝났지만 결과 파일이 생성되지 않았습니다.");
         }
         
         if (!this.IsDisposed && !this.Disposing)
@@ -7898,6 +8214,10 @@ document.querySelectorAll('a[target=""_blank""], form[target=""_blank""]').forEa
     private static void LaunchUpdateInstallerAfterExit(string installerPath)
     {
         int parentProcessId = Environment.ProcessId;
+        string fallbackAppPath = Environment.ProcessPath ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Multi Media Toolkit",
+            "Multi Media Toolkit.exe");
         string launcherPath = Path.Combine(Path.GetTempPath(), $"MMT_UpdateLauncher_{Guid.NewGuid():N}.ps1");
         string installerLogPath = Path.Combine(Path.GetTempPath(), $"MMT_Update_{DateTime.Now:yyyyMMdd_HHmmss}.log");
         string launcherErrorPath = installerLogPath + ".launcher-error.txt";
@@ -7907,7 +8227,8 @@ param(
     [int]$ParentId,
     [string]$InstallerPath,
     [string]$LogPath,
-    [string]$LauncherErrorPath
+    [string]$LauncherErrorPath,
+    [string]$FallbackAppPath
 )
 
 try {
@@ -7929,10 +8250,35 @@ try {
     }
 }
 catch {
-    $_ | Out-File -LiteralPath $LauncherErrorPath -Encoding utf8
+    $errorDetails = ($_ | Out-String).Trim()
+    $errorDetails | Out-File -LiteralPath $LauncherErrorPath -Encoding utf8
+
+    $failureMessage = '업데이트 설치 중 기존 프로그램 파일을 교체하지 못했습니다.'
+    if (Test-Path -LiteralPath $LogPath) {
+        $logText = Get-Content -LiteralPath $LogPath -Raw -ErrorAction SilentlyContinue
+        $blockerMatch = [regex]::Match($logText, 'RestartManager found an application using one of our files:\s*([^\r\n]+)')
+        if ($blockerMatch.Success) {
+            $failureMessage = "'$($blockerMatch.Groups[1].Value.Trim())' 프로그램이 Multi Media Toolkit 파일을 사용 중입니다."
+        }
+        elseif ($logText -match 'DeleteFile.*(?:code 32|코드 32)') {
+            $failureMessage = '다른 프로그램이 Multi Media Toolkit 실행 파일을 사용 중입니다.'
+        }
+    }
+
+    $userDataFolder = Join-Path $env:LOCALAPPDATA 'YoutubeDownloader'
+    $failureMarkerPath = Join-Path $userDataFolder 'update-error.txt'
+    New-Item -ItemType Directory -Path $userDataFolder -Force | Out-Null
+    $failureMessage | Out-File -LiteralPath $failureMarkerPath -Encoding utf8
+
+    if (Test-Path -LiteralPath $FallbackAppPath) {
+        Start-Process -FilePath $FallbackAppPath -ArgumentList '/updatefailed'
+    }
 }
 finally {
     Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $InstallerPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $LogPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $LauncherErrorPath -Force -ErrorAction SilentlyContinue
 }
 """;
 
@@ -7941,13 +8287,58 @@ finally {
         var launcherInfo = new ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{launcherPath}\" -ParentId {parentProcessId} -InstallerPath \"{installerPath}\" -LogPath \"{installerLogPath}\" -LauncherErrorPath \"{launcherErrorPath}\"",
+            Arguments = $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{launcherPath}\" -ParentId {parentProcessId} -InstallerPath \"{installerPath}\" -LogPath \"{installerLogPath}\" -LauncherErrorPath \"{launcherErrorPath}\" -FallbackAppPath \"{fallbackAppPath}\"",
             UseShellExecute = false,
             CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden
         };
 
         _ = Process.Start(launcherInfo) ?? throw new InvalidOperationException("업데이트 설치 실행기를 시작하지 못했습니다.");
+    }
+
+    private static void CleanupOldVersionedExecutables()
+    {
+        try
+        {
+            string currentPath = Environment.ProcessPath ?? string.Empty;
+            string installFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Multi Media Toolkit");
+
+            if (!Directory.Exists(installFolder) ||
+                !Path.GetFileName(currentPath).StartsWith("Multi Media Toolkit.v", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+            foreach (string file in Directory.EnumerateFiles(installFolder, "Multi Media Toolkit.v*.exe"))
+            {
+                if (file.Equals(currentPath, StringComparison.OrdinalIgnoreCase)) continue;
+                try { File.Delete(file); } catch { }
+            }
+        }
+        catch { }
+    }
+
+    private static void CleanupStaleUpdateArtifacts()
+    {
+        try
+        {
+            string tempFolder = Path.GetTempPath();
+            foreach (string pattern in new[]
+                     {
+                         "MMT_Setup_v*.exe",
+                         "MMT_Update_*.log",
+                         "MMT_Update_*.log.launcher-error.txt",
+                         "MMT_UpdateLauncher_*.ps1"
+                     })
+            {
+                foreach (string file in Directory.EnumerateFiles(tempFolder, pattern))
+                {
+                    try { File.Delete(file); } catch { }
+                }
+            }
+        }
+        catch { }
     }
 
     private async Task<(string Url, string Title)> TryReadThreadsMediaFromWebViewAsync()
