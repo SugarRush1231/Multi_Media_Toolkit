@@ -21,10 +21,18 @@ namespace YoutubeDownloader
         public string OutputNameTemplate { get; set; } = "%(title)s";
         public string PreferredTitle { get; set; } = "";
         public int PlaylistItemIndex { get; set; }
+        public bool EmbedMetadata { get; set; }
+        public bool RemoveSponsorSegments { get; set; }
+        public double SectionStartSeconds { get; set; }
+        public double SectionEndSeconds { get; set; }
+        public bool LastSponsorBlockFallback { get; private set; }
+        public bool LastMetadataFallback { get; private set; }
         public bool LastSubtitleDownloaded { get; private set; }
         public async Task<string> DownloadVideoAsync(string videoUrl, string saveDirectory, string browser = "none", System.Threading.CancellationToken token = default, string cookieFile = "", Dictionary<string, string>? headers = null)
         {
             LastSubtitleDownloaded = false;
+            LastSponsorBlockFallback = false;
+            LastMetadataFallback = false;
 
             // 1. URL 정화
             videoUrl = videoUrl.Trim().Trim('\"', '\'', ' ');
@@ -359,11 +367,17 @@ namespace YoutubeDownloader
             }
             if (isYouTubeDownload)
             {
-                arguments += "--no-playlist --playlist-items 1 ";
+                arguments += "--no-playlist --playlist-items 1 -S \"lang\" ";
             }
             else if (PlaylistItemIndex > 0)
             {
                 arguments += $"--playlist-items {PlaylistItemIndex} ";
+            }
+
+            if (SectionEndSeconds > SectionStartSeconds)
+            {
+                string section = $"*{FormatSectionTime(SectionStartSeconds)}-{FormatSectionTime(SectionEndSeconds)}";
+                arguments += $"--download-sections {QuoteProcessArgument(section)} --force-keyframes-at-cuts ";
             }
             
             // 사이트별로 적절한 Referer 설정
@@ -409,7 +423,21 @@ namespace YoutubeDownloader
                 }
             }
             
+            string plainCommonArguments = arguments;
+            if (EmbedMetadata)
+            {
+                arguments += "--embed-metadata --embed-thumbnail --embed-chapters ";
+            }
+
+            string sponsorFallbackCommonArguments = arguments;
+            if (RemoveSponsorSegments && isYouTubeDownload)
+            {
+                arguments += "--sponsorblock-remove sponsor ";
+            }
+
             string commonArguments = arguments;
+            string metadataFallbackCommonArguments = plainCommonArguments +
+                (RemoveSponsorSegments && isYouTubeDownload ? "--sponsorblock-remove sponsor " : "");
             string formatArguments = "";
             if (FormatSelector.Equals("best_mp3", StringComparison.OrdinalIgnoreCase))
             {
@@ -424,6 +452,36 @@ namespace YoutubeDownloader
             arguments = BuildYtDlpDownloadArguments(commonArguments, formatArguments, ffmpegDir, outputTemplate, videoUrl, audioOnlyDownload);
 
             var result = await RunYtDlpProcessAsync(arguments);
+
+            if (!result.Success && RemoveSponsorSegments && isYouTubeDownload &&
+                IsSponsorBlockFailure(result.StandardOutput + Environment.NewLine + result.ErrorOutput))
+            {
+                LastSponsorBlockFallback = true;
+                commonArguments = sponsorFallbackCommonArguments;
+                string originalArguments = BuildYtDlpDownloadArguments(
+                    commonArguments,
+                    formatArguments,
+                    ffmpegDir,
+                    outputTemplate,
+                    videoUrl,
+                    audioOnlyDownload);
+                result = await RunYtDlpProcessAsync(originalArguments);
+            }
+
+            if (!result.Success && EmbedMetadata &&
+                IsMetadataPostProcessingFailure(result.StandardOutput + Environment.NewLine + result.ErrorOutput))
+            {
+                LastMetadataFallback = true;
+                commonArguments = LastSponsorBlockFallback ? plainCommonArguments : metadataFallbackCommonArguments;
+                string plainArguments = BuildYtDlpDownloadArguments(
+                    commonArguments,
+                    formatArguments,
+                    ffmpegDir,
+                    outputTemplate,
+                    videoUrl,
+                    audioOnlyDownload);
+                result = await RunYtDlpProcessAsync(plainArguments);
+            }
 
             if (result.Success && YtDlpReportedExistingFile(result.StandardOutput, result.ErrorOutput))
             {
@@ -730,6 +788,23 @@ namespace YoutubeDownloader
             result.Append('\\', backslashes * 2);
             result.Append('"');
             return result.ToString();
+        }
+
+        private static string FormatSectionTime(double seconds)
+        {
+            TimeSpan value = TimeSpan.FromSeconds(Math.Max(0, seconds));
+            return value.TotalHours >= 1
+                ? $"{(int)value.TotalHours:00}:{value.Minutes:00}:{value.Seconds:00}"
+                : $"{value.Minutes:00}:{value.Seconds:00}";
+        }
+
+        private string GetFfmpegSectionArguments()
+        {
+            if (SectionEndSeconds <= SectionStartSeconds) return "";
+
+            string start = SectionStartSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+            string duration = (SectionEndSeconds - SectionStartSeconds).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+            return $"-ss {start} -t {duration} ";
         }
 
         private static bool IsInvalidFilenameError(string errorOutput)
@@ -1237,6 +1312,28 @@ namespace YoutubeDownloader
                     || errorOutput.Contains("No video formats", StringComparison.OrdinalIgnoreCase));
         }
 
+        private static bool IsSponsorBlockFailure(string output)
+        {
+            if (string.IsNullOrWhiteSpace(output)) return false;
+            return output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Any(line =>
+                    (line.Contains("SponsorBlock", StringComparison.OrdinalIgnoreCase) ||
+                     line.Contains("ModifyChapters", StringComparison.OrdinalIgnoreCase)) &&
+                    (line.Contains("ERROR", StringComparison.OrdinalIgnoreCase) ||
+                     line.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+                     line.Contains("unable", StringComparison.OrdinalIgnoreCase)));
+        }
+
+        private static bool IsMetadataPostProcessingFailure(string output)
+        {
+            if (string.IsNullOrWhiteSpace(output)) return false;
+            return output.Contains("EmbedThumbnail", StringComparison.OrdinalIgnoreCase) ||
+                   output.Contains("Metadata", StringComparison.OrdinalIgnoreCase) &&
+                   output.Contains("PostProcessingError", StringComparison.OrdinalIgnoreCase) ||
+                   output.Contains("Unable to embed thumbnail", StringComparison.OrdinalIgnoreCase) ||
+                   output.Contains("AtomicParsley", StringComparison.OrdinalIgnoreCase);
+        }
+
         private async Task<(string Url, string Title)?> ResolveChzzkClipAsync(string originalUrl)
         {
             string clipId = "";
@@ -1311,7 +1408,7 @@ namespace YoutubeDownloader
                     throw new Exception("영상의 M3U8 주소를 찾을 수 없습니다.");
                 }
 
-                string safeTitle = string.Join("_", title.Split(Path.GetInvalidFileNameChars())) + "_" + clipId;
+                string safeTitle = string.Join("_", title.Split(Path.GetInvalidFileNameChars()));
                 return (m3u8Url, safeTitle);
             }
             catch (Exception ex)
@@ -2749,7 +2846,7 @@ namespace YoutubeDownloader
 
                 OnProgressChanged?.Invoke(96);
 
-                string arguments = $"-i \"{tempTsPath}\" -c copy \"{outputFilePath}\" -y";
+                string arguments = $"-i \"{tempTsPath}\" {GetFfmpegSectionArguments()}-c copy \"{outputFilePath}\" -y";
                 ProcessStartInfo psi = new ProcessStartInfo
                 {
                     FileName = ffmpegPath,
@@ -2930,7 +3027,7 @@ namespace YoutubeDownloader
             string networkInputOptions = string.IsNullOrWhiteSpace(temporaryManifestPath)
                 ? $"-user_agent \"{userAgent}\" {headerArgs}"
                 : "";
-            string arguments = $"{networkInputOptions}{hlsInputOptions}{localManifestOptions}-i \"{ffmpegInputUrl}\" -c copy \"{outputFilePath}\" -y";
+            string arguments = $"{networkInputOptions}{hlsInputOptions}{localManifestOptions}-i \"{ffmpegInputUrl}\" {GetFfmpegSectionArguments()}-c copy \"{outputFilePath}\" -y";
 
             ProcessStartInfo psi = new ProcessStartInfo
             {

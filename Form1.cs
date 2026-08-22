@@ -32,6 +32,7 @@ public partial class Form1 : Form
     private YoutubeClient _youtube;
     private StreamManifest _streamManifest;
     private Video _currentVideo;
+    private double? _currentVideoDurationSeconds;
     private string _customTitle = "";
     private string _currentUrl = "";
     private string _pendingYoutubeSourceFeature = "유튜브 다운로더";
@@ -50,7 +51,6 @@ public partial class Form1 : Form
     private readonly SemaphoreSlim _ytDlpInstallSemaphore = new SemaphoreSlim(1, 1);
     private readonly SemaphoreSlim _ffmpegInstallSemaphore = new SemaphoreSlim(1, 1);
     private readonly SemaphoreSlim _denoInstallSemaphore = new SemaphoreSlim(1, 1);
-    private const int MaxYtDlpParallelDownloads = 3;
     private const string YtDlpStartButtonText = "다운로드";
     private const string YtDlpQueueButtonText = "대기열에 추가";
     
@@ -69,11 +69,18 @@ public partial class Form1 : Form
     private ComboBox? cmbFileNamePreset;
     private TextBox? txtCustomFileNameTemplate;
     private ComboBox? cmbDefaultVideoQuality;
+    private ComboBox? cmbConcurrentDownloads;
     private ComboBox? cmbYoutubeSubtitleLanguage;
     private ComboBox? cmbYtDlpSubtitleLanguage;
+    private CheckBox? chkYoutubeEmbedMetadata;
+    private CheckBox? chkYoutubeSponsorBlock;
+    private CheckBox? chkYoutubeDownloadSection;
+    private CheckBox? chkYtDlpEmbedMetadata;
+    private CheckBox? chkYtDlpDownloadSection;
     private CheckBox? chkEnableWidgetMode;
     private RoundButton? btnOpenVersionArchive;
     private RoundButton? btnExperimentalFeatures;
+    private RoundButton? btnRepairTools;
     private RoundButton? btnInquiry;
     private DateTime _lastInquirySentAt = DateTime.MinValue;
     private Panel? panelExperimentalFeaturesOverlay;
@@ -121,7 +128,7 @@ public partial class Form1 : Form
     private CancellationTokenSource? _ytDlpCts;
     private int _lastWidth = 800;
     private int _lastHeight = 600;
-    private const string CURR_VERSION = "1.3.5";
+    private const string CURR_VERSION = "1.3.6";
     private static readonly string UpdateFailureMarkerPath = Path.Combine(SettingsManager.UserDataFolder, "update-error.txt");
 
     // [Twitter/X Private Extraction] Captured Data
@@ -357,15 +364,19 @@ public partial class Form1 : Form
         txtDownloadFolder.Text = SettingsManager.Settings?.DefaultDownloadFolder ?? "";
         miniEditorControl.UpdateSavePath(initialPath);
         ConfigureFileDropTargets();
+        ConfigureYoutubeQueueCopy();
         ConfigureYtDlpQueueColumns();
         HideLegacyPrivateModeToggles();
         ConfigureMiniEditorVisibility();
         ConfigureLoginDownloadHelp();
         ConfigureDownloadRuleSettings();
+        ConfigureDownloadOptionControls();
+        ConfigureBatchUrlPaste();
         ConfigureWidgetModeSettings();
         NormalizeKoreanUiText(initialPath);
         ConfigureVersionArchiveButton();
         ConfigureExperimentalFeaturesMenu();
+        ConfigureToolRepairButton();
         ConfigureInquiryButton();
         ConfigureSettingsAboutCard();
         ConfigureTopWidgetModeButton();
@@ -728,6 +739,82 @@ public partial class Form1 : Form
         };
     }
 
+    private void ConfigureYoutubeQueueCopy()
+    {
+        var copyUrlMenuItem = new ToolStripMenuItem("URL 주소 복사")
+        {
+            ShortcutKeyDisplayString = "Ctrl+C"
+        };
+        copyUrlMenuItem.Click += (s, e) => CopySelectedYoutubeUrls();
+        contextMenuRemove.Items.Insert(0, copyUrlMenuItem);
+
+        lvQueue.KeyDown += (s, e) =>
+        {
+            if (!e.Control || e.KeyCode != Keys.C) return;
+            CopySelectedYoutubeUrls();
+            e.SuppressKeyPress = true;
+            e.Handled = true;
+        };
+
+        lvQueue.MouseDown += (s, e) =>
+        {
+            if (e.Button != MouseButtons.Right) return;
+
+            ListViewItem? clickedItem = lvQueue.GetItemAt(e.X, e.Y);
+            if (clickedItem == null)
+            {
+                foreach (ListViewItem item in lvQueue.SelectedItems.Cast<ListViewItem>().ToList())
+                    item.Selected = false;
+                return;
+            }
+
+            if (!clickedItem.Selected)
+            {
+                foreach (ListViewItem item in lvQueue.SelectedItems.Cast<ListViewItem>().ToList())
+                    item.Selected = false;
+                clickedItem.Selected = true;
+            }
+            clickedItem.Focused = true;
+        };
+
+        contextMenuRemove.Opening += (s, e) =>
+        {
+            bool hasSelection = lvQueue.SelectedItems.Count > 0;
+            copyUrlMenuItem.Enabled = hasSelection;
+            menuRemoveSelected.Enabled = hasSelection;
+        };
+    }
+
+    private void CopySelectedYoutubeUrls()
+    {
+        string[] urls = lvQueue.SelectedItems
+            .Cast<ListViewItem>()
+            .Select(item => item.Tag is DownloadJob job ? job.Url.Trim() : string.Empty)
+            .Where(url => !string.IsNullOrWhiteSpace(url))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (urls.Length == 0) return;
+
+        string text = string.Join(Environment.NewLine, urls);
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                Clipboard.SetText(text);
+                lblStatus.Text = urls.Length == 1
+                    ? "URL 주소를 복사했습니다."
+                    : $"{urls.Length}개 URL 주소를 복사했습니다.";
+                return;
+            }
+            catch (System.Runtime.InteropServices.ExternalException) when (attempt < 2)
+            {
+                Thread.Sleep(30);
+            }
+        }
+
+        ShowCenteredMessage("URL을 클립보드에 복사하지 못했습니다.", "URL 복사", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
     private void CopySelectedYtDlpUrls()
     {
         string[] urls = lvYtDlpQueue.SelectedItems
@@ -1052,6 +1139,17 @@ public partial class Form1 : Form
         cmbDefaultVideoQuality.Items.AddRange(new object[] { "최고화질", "1080p", "720p", "MP3" });
         group.Controls.Add(cmbDefaultVideoQuality);
 
+        group.Controls.Add(new Label { Text = "동시 다운로드", AutoSize = true, Location = new Point(285, 188), Font = new Font("Segoe UI", 9F, FontStyle.Bold) });
+        cmbConcurrentDownloads = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Location = new Point(390, 184),
+            Size = new Size(150, 23),
+            Font = new Font("Segoe UI", 9F)
+        };
+        cmbConcurrentDownloads.Items.AddRange(new object[] { "안정적 (1개)", "균형 (3개)", "빠르게 (5개)" });
+        group.Controls.Add(cmbConcurrentDownloads);
+
         ConfigureInlineSubtitleLanguageControls();
 
         chkYoutubeDownloadSubtitles.CheckedChanged -= SubtitleCheckbox_CheckedChanged;
@@ -1065,6 +1163,431 @@ public partial class Form1 : Form
         tabSettings.AutoScrollMinSize = Size.Empty;
 
         ReloadDownloadRuleSettingsUI();
+    }
+
+    private void ConfigureDownloadOptionControls()
+    {
+        chkYoutubeEmbedMetadata = CreateDownloadOptionCheckBox("썸네일·게시 정보 포함", Point.Empty);
+        chkYoutubeSponsorBlock = CreateDownloadOptionCheckBox("스폰서 구간 제거", Point.Empty);
+        chkYoutubeDownloadSection = CreateDownloadOptionCheckBox("구간만 받기", Point.Empty);
+        chkYtDlpEmbedMetadata = CreateDownloadOptionCheckBox("썸네일·게시 정보 포함", Point.Empty);
+        chkYtDlpDownloadSection = CreateDownloadOptionCheckBox("구간만 받기", Point.Empty);
+
+        tabYoutube.Controls.Add(chkYoutubeEmbedMetadata);
+        tabYoutube.Controls.Add(chkYoutubeSponsorBlock);
+        tabYoutube.Controls.Add(chkYoutubeDownloadSection);
+        tabYtDlp.Controls.Add(chkYtDlpEmbedMetadata);
+        tabYtDlp.Controls.Add(chkYtDlpDownloadSection);
+
+        chkYoutubeEmbedMetadata.Checked = SettingsManager.Settings.YoutubeEmbedMetadata;
+        chkYoutubeSponsorBlock.Checked = SettingsManager.Settings.YoutubeRemoveSponsorSegments;
+        chkYtDlpEmbedMetadata.Checked = SettingsManager.Settings.WebsiteEmbedMetadata;
+        chkYoutubeEmbedMetadata.CheckedChanged += DownloadOptionSettings_CheckedChanged;
+        chkYoutubeSponsorBlock.CheckedChanged += DownloadOptionSettings_CheckedChanged;
+        chkYtDlpEmbedMetadata.CheckedChanged += DownloadOptionSettings_CheckedChanged;
+
+        var tip = new ToolTip { ShowAlways = true };
+        tip.SetToolTip(chkYoutubeEmbedMetadata, "파일에 썸네일, 제목, 게시자와 챕터 정보를 함께 저장합니다.");
+        tip.SetToolTip(chkYtDlpEmbedMetadata, "사이트가 제공하는 경우 썸네일과 게시 정보를 파일에 함께 저장합니다.");
+        tip.SetToolTip(chkYoutubeSponsorBlock, "YouTube의 스폰서 구간이 있으면 제거합니다. 구간이 없으면 원본 영상을 그대로 저장합니다.");
+        tip.SetToolTip(chkYoutubeDownloadSection, "다운로드할 시작과 종료 시간을 지정합니다.");
+        tip.SetToolTip(chkYtDlpDownloadSection, "다운로드할 시작과 종료 시간을 지정합니다.");
+
+        LayoutDownloadOptionControls();
+        chkYoutubeEmbedMetadata.BringToFront();
+        chkYoutubeSponsorBlock.BringToFront();
+        chkYoutubeDownloadSection.BringToFront();
+        chkYtDlpEmbedMetadata.BringToFront();
+        chkYtDlpDownloadSection.BringToFront();
+    }
+
+    private void DownloadOptionSettings_CheckedChanged(object? sender, EventArgs e)
+    {
+        SettingsManager.Settings.YoutubeEmbedMetadata = chkYoutubeEmbedMetadata?.Checked == true;
+        SettingsManager.Settings.YoutubeRemoveSponsorSegments = chkYoutubeSponsorBlock?.Checked == true;
+        SettingsManager.Settings.WebsiteEmbedMetadata = chkYtDlpEmbedMetadata?.Checked == true;
+        SettingsManager.Save();
+    }
+
+    private void LayoutDownloadOptionControls()
+    {
+        if (chkYoutubeEmbedMetadata != null && chkYoutubeSponsorBlock != null && chkYoutubeDownloadSection != null)
+        {
+            int left = chkYoutubeDownloadSubtitles.Right + 18;
+            if (cmbYoutubeSubtitleLanguage?.Visible == true)
+                left = cmbYoutubeSubtitleLanguage.Right + 18;
+
+            chkYoutubeEmbedMetadata.Location = new Point(left, chkYoutubeDownloadSubtitles.Top);
+            chkYoutubeSponsorBlock.Location = new Point(chkYoutubeEmbedMetadata.Right + 18, chkYoutubeDownloadSubtitles.Top);
+            chkYoutubeDownloadSection.Location = new Point(chkYoutubeSponsorBlock.Right + 18, chkYoutubeDownloadSubtitles.Top);
+        }
+
+        if (chkYtDlpEmbedMetadata != null && chkYtDlpDownloadSection != null)
+        {
+            int left = chkKeepLoginSession?.Right + 18 ?? chkYtDlpDownloadSubtitles.Right + 18;
+            chkYtDlpEmbedMetadata.Location = new Point(left, chkYtDlpDownloadSubtitles.Top);
+            chkYtDlpDownloadSection.Location = new Point(chkYtDlpEmbedMetadata.Right + 18, chkYtDlpDownloadSubtitles.Top);
+        }
+    }
+
+    private static CheckBox CreateDownloadOptionCheckBox(string text, Point location)
+    {
+        return new CheckBox
+        {
+            Text = text,
+            AutoSize = true,
+            Location = location,
+            Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+            ForeColor = Color.FromArgb(80, 80, 80),
+            BackColor = Color.Transparent,
+            UseVisualStyleBackColor = true
+        };
+    }
+
+    private bool TryPromptDownloadSection(
+        out double startSeconds,
+        out double endSeconds,
+        double? maximumSeconds = null)
+    {
+        startSeconds = 0;
+        endSeconds = 0;
+        if (maximumSeconds is > 0)
+            maximumSeconds = Math.Floor(maximumSeconds.Value);
+
+        using var dialog = new Form
+        {
+            Text = "구간만 받기",
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ShowInTaskbar = false,
+            ClientSize = new Size(430, 205),
+            Font = new Font("Segoe UI", 9F)
+        };
+
+        dialog.Controls.Add(new Label
+        {
+            Text = "받을 영상 구간을 입력해 주세요.",
+            AutoSize = true,
+            Location = new Point(20, 18),
+            Font = new Font("Segoe UI", 11F, FontStyle.Bold)
+        });
+        dialog.Controls.Add(new Label
+        {
+            Text = maximumSeconds is > 0
+                ? $"시간 형식: 01:30  ·  영상 최대: {FormatSectionTime(maximumSeconds.Value)}"
+                : "시간 형식: 01:30 또는 00:01:30",
+            AutoSize = true,
+            Location = new Point(20, 48),
+            ForeColor = Color.Gray
+        });
+
+        var startBox = new TextBox
+        {
+            Location = new Point(95, 82),
+            Size = new Size(300, 25),
+            Text = "00:00"
+        };
+        var endBox = new TextBox
+        {
+            Location = new Point(95, 118),
+            Size = new Size(300, 25),
+            Text = maximumSeconds is > 0
+                ? FormatSectionTime(maximumSeconds.Value)
+                : ""
+        };
+        dialog.Controls.Add(new Label { Text = "시작", AutoSize = true, Location = new Point(20, 86) });
+        dialog.Controls.Add(new Label { Text = "종료", AutoSize = true, Location = new Point(20, 122) });
+        dialog.Controls.Add(startBox);
+        dialog.Controls.Add(endBox);
+
+        var okButton = new RoundButton
+        {
+            Text = "적용",
+            DialogResult = DialogResult.OK,
+            Location = new Point(235, 158),
+            Size = new Size(75, 32),
+            BackColor = Color.FromArgb(2, 132, 199),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            BorderRadius = 14
+        };
+        okButton.FlatAppearance.BorderSize = 0;
+        var cancelButton = new RoundButton
+        {
+            Text = "취소",
+            DialogResult = DialogResult.Cancel,
+            Location = new Point(320, 158),
+            Size = new Size(75, 32),
+            BackColor = Color.FromArgb(255, 241, 242),
+            ForeColor = Color.FromArgb(225, 29, 72),
+            FlatStyle = FlatStyle.Flat,
+            BorderRadius = 14
+        };
+        cancelButton.FlatAppearance.BorderSize = 0;
+        dialog.Controls.Add(okButton);
+        dialog.Controls.Add(cancelButton);
+        dialog.AcceptButton = okButton;
+        dialog.CancelButton = cancelButton;
+
+        while (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            if (TryParseSectionTime(startBox.Text, out startSeconds) &&
+                TryParseSectionTime(endBox.Text, out endSeconds) &&
+                endSeconds > startSeconds)
+            {
+                if (maximumSeconds is > 0 &&
+                    (startSeconds >= maximumSeconds.Value || endSeconds > maximumSeconds.Value))
+                {
+                    ShowCenteredMessage(
+                        $"이 영상은 최대 {FormatSectionTime(maximumSeconds.Value)}까지 입력할 수 있습니다.",
+                        "구간 확인",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                    dialog.DialogResult = DialogResult.None;
+                    continue;
+                }
+
+                return true;
+            }
+
+            ShowCenteredMessage(
+                "종료 시간은 시작 시간보다 뒤에 있어야 합니다.\n예: 시작 01:20, 종료 02:10",
+                "구간 확인",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            dialog.DialogResult = DialogResult.None;
+        }
+
+        startSeconds = 0;
+        endSeconds = 0;
+        return false;
+    }
+
+    private static bool TryParseSectionTime(string value, out double totalSeconds)
+    {
+        totalSeconds = 0;
+        string[] parts = (value ?? "").Trim().Split(':');
+        if (parts.Length is < 1 or > 3) return false;
+
+        double multiplier = 1;
+        for (int i = parts.Length - 1; i >= 0; i--)
+        {
+            if (!double.TryParse(
+                    parts[i],
+                    System.Globalization.NumberStyles.AllowDecimalPoint,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out double part) || part < 0)
+            {
+                return false;
+            }
+
+            if (i > 0 && part >= 60) return false;
+            totalSeconds += part * multiplier;
+            multiplier *= 60;
+        }
+
+        return double.IsFinite(totalSeconds);
+    }
+
+    private static string FormatSectionTime(double seconds)
+    {
+        TimeSpan value = TimeSpan.FromSeconds(Math.Max(0, seconds));
+        return value.TotalHours >= 1
+            ? $"{(int)value.TotalHours:00}:{value.Minutes:00}:{value.Seconds:00}"
+            : $"{value.Minutes:00}:{value.Seconds:00}";
+    }
+
+    private static string FormatFileSize(long bytes)
+    {
+        if (bytes >= 1024L * 1024 * 1024) return $"{bytes / (1024d * 1024 * 1024):0.0} GB";
+        return $"{bytes / (1024d * 1024):0} MB";
+    }
+
+    private bool ConfirmDownloadSpace(string path, long estimatedBytes = 0)
+    {
+        try
+        {
+            string fullPath = Path.GetFullPath(path);
+            string root = Path.GetPathRoot(fullPath) ?? "";
+            if (string.IsNullOrWhiteSpace(root)) return true;
+
+            var drive = new DriveInfo(root);
+            if (!drive.IsReady) return true;
+
+            long available = drive.AvailableFreeSpace;
+            long reserve = Math.Max(512L * 1024 * 1024, estimatedBytes / 20);
+            bool insufficient = estimatedBytes > 0 && available < estimatedBytes + reserve;
+            bool criticallyLow = estimatedBytes == 0 && available < 512L * 1024 * 1024;
+            if (!insufficient && !criticallyLow) return true;
+
+            string estimateText = estimatedBytes > 0
+                ? $"\n예상 다운로드 용량: 약 {FormatFileSize(estimatedBytes)}"
+                : "";
+            return ShowCenteredMessage(
+                $"저장 공간이 부족할 수 있습니다.{estimateText}\n현재 사용 가능 공간: {FormatFileSize(available)}\n\n그대로 대기열에 추가할까요?",
+                "저장 공간 확인",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning) == DialogResult.Yes;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    private void ConfigureBatchUrlPaste()
+    {
+        txtUrl.KeyDown += BatchUrlTextBox_KeyDown;
+        txtYtDlpUrl.KeyDown += BatchUrlTextBox_KeyDown;
+    }
+
+    private async void BatchUrlTextBox_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (!e.Control || e.KeyCode != Keys.V) return;
+
+        List<string> urls = ExtractHttpUrls(GetClipboardText());
+        if (urls.Count < 2) return;
+
+        e.Handled = true;
+        e.SuppressKeyPress = true;
+        await ConfirmAndQueueMultipleUrlsAsync(urls, ReferenceEquals(sender, txtUrl));
+    }
+
+    private static List<string> ExtractHttpUrls(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return new List<string>();
+
+        var starts = System.Text.RegularExpressions.Regex.Matches(
+            text,
+            @"https?://",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var urls = new List<string>();
+        for (int i = 0; i < starts.Count; i++)
+        {
+            int start = starts[i].Index;
+            int end = i + 1 < starts.Count ? starts[i + 1].Index : text.Length;
+            string candidate = text[start..end].Trim();
+            int whitespace = candidate.IndexOfAny(new[] { ' ', '\t', '\r', '\n' });
+            if (whitespace >= 0) candidate = candidate[..whitespace];
+            candidate = candidate.TrimEnd(',', ';', ')', ']', '}', '>', '"', '\'', '.', '。');
+
+            if (TryNormalizeHttpUrl(candidate, out string normalized) &&
+                !urls.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+            {
+                urls.Add(normalized);
+            }
+        }
+
+        return urls;
+    }
+
+    private async Task ConfirmAndQueueMultipleUrlsAsync(IReadOnlyList<string> urls, bool fromYoutubeTab)
+    {
+        using var dialog = new Form
+        {
+            Text = "여러 URL 확인",
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ClientSize = new Size(660, 390),
+            Font = new Font("Segoe UI", 9F),
+            ShowInTaskbar = false
+        };
+        var title = new Label
+        {
+            Text = $"다운로드할 URL {urls.Count}개를 확인해 주세요.",
+            AutoSize = true,
+            Location = new Point(20, 18),
+            Font = new Font("Segoe UI", 12F, FontStyle.Bold)
+        };
+        var hint = new Label
+        {
+            Text = "잘못 나뉜 주소가 있다면 체크를 해제하세요.",
+            AutoSize = true,
+            Location = new Point(20, 50),
+            ForeColor = Color.Gray
+        };
+        var list = new CheckedListBox
+        {
+            Location = new Point(20, 80),
+            Size = new Size(620, 245),
+            CheckOnClick = true,
+            HorizontalScrollbar = true
+        };
+        foreach (string url in urls) list.Items.Add(url, true);
+
+        var addButton = new RoundButton
+        {
+            Text = "선택 항목 대기열 추가",
+            Location = new Point(390, 340),
+            Size = new Size(160, 34),
+            BackColor = Color.FromArgb(2, 132, 199),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            BorderRadius = 14,
+            DialogResult = DialogResult.OK
+        };
+        addButton.FlatAppearance.BorderSize = 0;
+        var cancelButton = new RoundButton
+        {
+            Text = "취소",
+            Location = new Point(560, 340),
+            Size = new Size(80, 34),
+            BackColor = Color.FromArgb(255, 241, 242),
+            ForeColor = Color.FromArgb(225, 29, 72),
+            FlatStyle = FlatStyle.Flat,
+            BorderRadius = 14,
+            DialogResult = DialogResult.Cancel
+        };
+        cancelButton.FlatAppearance.BorderSize = 0;
+        dialog.Controls.AddRange(new Control[] { title, hint, list, addButton, cancelButton });
+        dialog.AcceptButton = addButton;
+        dialog.CancelButton = cancelButton;
+
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var selectedUrls = list.CheckedItems.Cast<string>().ToList();
+        if (selectedUrls.Count == 0) return;
+
+        bool downloadSubtitles = fromYoutubeTab ? chkYoutubeDownloadSubtitles.Checked : chkYtDlpDownloadSubtitles.Checked;
+        string subtitlePreset = fromYoutubeTab
+            ? GetSelectedSubtitlePreset(cmbYoutubeSubtitleLanguage)
+            : GetSelectedSubtitlePreset(cmbYtDlpSubtitleLanguage);
+        bool embedMetadata = fromYoutubeTab
+            ? chkYoutubeEmbedMetadata?.Checked == true
+            : chkYtDlpEmbedMetadata?.Checked == true;
+        bool removeSponsors = fromYoutubeTab && chkYoutubeSponsorBlock?.Checked == true;
+        bool useSection = fromYoutubeTab
+            ? chkYoutubeDownloadSection?.Checked == true
+            : chkYtDlpDownloadSection?.Checked == true;
+        double sectionStartSeconds = 0;
+        double sectionEndSeconds = 0;
+        if (useSection && !TryPromptDownloadSection(out sectionStartSeconds, out sectionEndSeconds)) return;
+
+        SelectMainTab(btnTabYtDlp, tabYtDlp);
+        int queued = 0;
+        foreach (string url in selectedUrls)
+        {
+            if (EnqueueYtDlpDownload(
+                url,
+                allowFolderPrompt: true,
+                out _,
+                sourceFeature: "여러 URL 다운로드",
+                downloadSubtitles: downloadSubtitles,
+                subtitlePreset: subtitlePreset,
+                embedMetadata: embedMetadata,
+                removeSponsorSegments: removeSponsors && LooksLikeYouTubeInput(url),
+                sectionStartSeconds: sectionStartSeconds,
+                sectionEndSeconds: sectionEndSeconds))
+            {
+                queued++;
+            }
+        }
+
+        lblYtDlpStatus.Text = $"선택한 URL 중 {queued}개를 대기열에 추가했습니다.";
+        await Task.CompletedTask;
     }
 
     private void ConfigureWidgetModeSettings()
@@ -1447,6 +1970,91 @@ public partial class Form1 : Form
         btnExperimentalFeatures.BringToFront();
     }
 
+    private void ConfigureToolRepairButton()
+    {
+        if (btnRepairTools == null)
+        {
+            btnRepairTools = new RoundButton
+            {
+                Name = "btnRepairTools",
+                Text = "필수 도구 복구",
+                Size = new Size(145, 34),
+                BorderRadius = 14,
+                BackColor = Color.FromArgb(226, 232, 240),
+                ForeColor = Color.FromArgb(51, 65, 85),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                Anchor = AnchorStyles.Left | AnchorStyles.Bottom
+            };
+            btnRepairTools.FlatAppearance.BorderSize = 0;
+            btnRepairTools.Click += BtnRepairTools_Click;
+            tabSettings.Controls.Add(btnRepairTools);
+
+            var tip = new ToolTip { ShowAlways = true };
+            tip.SetToolTip(btnRepairTools, "FFmpeg, ffprobe, yt-dlp와 YouTube 실행 환경을 확인하고 손상된 도구만 복구합니다.");
+        }
+
+        int left = btnExperimentalFeatures?.Right + 10 ?? 305;
+        btnRepairTools.Location = new Point(left, Math.Max(420, tabSettings.ClientSize.Height - 54));
+        btnRepairTools.BringToFront();
+    }
+
+    private async void BtnRepairTools_Click(object? sender, EventArgs e)
+    {
+        if (btnRepairTools == null || !btnRepairTools.Enabled) return;
+
+        string originalText = btnRepairTools.Text;
+        btnRepairTools.Enabled = false;
+        btnRepairTools.Text = "확인 중...";
+        try
+        {
+            bool repairNeeded =
+                !IsValidWindowsExecutable(SettingsManager.GetFFmpegPath()) ||
+                !IsValidWindowsExecutable(SettingsManager.GetFFprobePath()) ||
+                !IsValidWindowsExecutable(SettingsManager.GetYtDlpPath()) ||
+                !IsValidWindowsExecutable(SettingsManager.GetDenoPath());
+
+            if (!repairNeeded)
+            {
+                ShowCenteredMessage("필수 도구가 모두 정상입니다.\n별도의 복구가 필요하지 않습니다.", "필수 도구 확인", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            _ytDlpForceUpdateChecked = false;
+            _denoReadyChecked = false;
+            await EnsureFFmpegAsync();
+            await EnsureYtDlpAsync(forceUpdate: true);
+            await EnsureDenoAsync();
+
+            if (!IsValidWindowsExecutable(SettingsManager.GetFFmpegPath()) ||
+                !IsValidWindowsExecutable(SettingsManager.GetFFprobePath()) ||
+                !IsValidWindowsExecutable(SettingsManager.GetYtDlpPath()) ||
+                !IsValidWindowsExecutable(SettingsManager.GetDenoPath()))
+            {
+                throw new InvalidDataException("일부 필수 도구를 확인할 수 없습니다.");
+            }
+
+            ShowCenteredMessage("필수 도구 확인과 복구가 완료되었습니다.", "필수 도구 복구", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            ShowCenteredMessage(
+                UserErrorFormatter.Format("필수 도구를 복구하지 못했습니다. 인터넷 연결을 확인한 뒤 다시 시도해 주세요.", ex),
+                "필수 도구 복구 실패",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            ReportError("설정", "필수 도구 복구", "필수 도구 수동 복구 실패", ex);
+        }
+        finally
+        {
+            if (!IsDisposed && btnRepairTools != null)
+            {
+                btnRepairTools.Text = originalText;
+                btnRepairTools.Enabled = true;
+            }
+        }
+    }
+
     private void ConfigureSettingsAboutCard()
     {
         lblAbout.Visible = true;
@@ -1809,6 +2417,7 @@ public partial class Form1 : Form
             ? "{title}"
             : SettingsManager.Settings.CustomFileNameTemplate;
         SelectComboText(cmbDefaultVideoQuality!, GetQualityDisplay(SettingsManager.Settings.DefaultVideoQuality));
+        SelectComboText(cmbConcurrentDownloads!, GetConcurrentDownloadsDisplay(SettingsManager.Settings.ConcurrentDownloads));
         string subtitlePreset = string.IsNullOrWhiteSpace(SettingsManager.Settings.SubtitleLanguagePreset)
             ? "Ko"
             : SettingsManager.Settings.SubtitleLanguagePreset;
@@ -1849,6 +2458,8 @@ public partial class Form1 : Form
             cmbYtDlpSubtitleLanguage.Visible = chkYtDlpDownloadSubtitles.Checked;
             if (cmbYtDlpSubtitleLanguage.Visible) cmbYtDlpSubtitleLanguage.BringToFront();
         }
+
+        LayoutDownloadOptionControls();
     }
 
     private async Task PopulateYoutubeSubtitleOptionsAsync(VideoId videoId)
@@ -1998,6 +2609,20 @@ public partial class Form1 : Form
         "720p" => "720p",
         "MP3" => "MP3",
         _ => "최고화질"
+    };
+
+    private static int GetConcurrentDownloadsValue(string? display)
+    {
+        if (display?.Contains("5개", StringComparison.Ordinal) == true) return 5;
+        if (display?.Contains("1개", StringComparison.Ordinal) == true) return 1;
+        return 3;
+    }
+
+    private static string GetConcurrentDownloadsDisplay(int value) => value switch
+    {
+        <= 1 => "안정적 (1개)",
+        >= 5 => "빠르게 (5개)",
+        _ => "균형 (3개)"
     };
 
     private static string GetSubtitlePresetValue(string? display) => display switch
@@ -4512,9 +5137,17 @@ public partial class Form1 : Form
 
     private async void BtnLoad_Click(object sender, EventArgs e)
     {
+        List<string> urls = ExtractHttpUrls(txtUrl.Text);
+        if (urls.Count > 1)
+        {
+            await ConfirmAndQueueMultipleUrlsAsync(urls, fromYoutubeTab: true);
+            return;
+        }
+
         string url = NormalizeYouTubeSingleVideoUrl(txtUrl.Text.Trim());
         if (string.IsNullOrEmpty(url)) return;
         _currentUrl = url;
+        _currentVideoDurationSeconds = null;
 
         if (!LooksLikeYouTubeInput(url))
         {
@@ -4535,6 +5168,7 @@ public partial class Form1 : Form
             lblVideoTitle.Text = "영상 정보를 불러오는 중...";
             
             _currentVideo = await _youtube.Videos.GetAsync(url);
+            _currentVideoDurationSeconds = _currentVideo.Duration?.TotalSeconds;
             _customTitle = _currentVideo.Title;
             UpdateVideoInfoDisplay();
 
@@ -4575,10 +5209,12 @@ public partial class Form1 : Form
                 .GroupBy(s => s.VideoQuality.Label)
                 .Select(g => g.First())
                 .ToList();
+            var preferredAudio = GetPreferredYoutubeAudioStream(_streamManifest);
 
             foreach (var stream in videoStreams)
             {
-                cmbQuality.Items.Add(new QualityOption($"{stream.VideoQuality.Label} (MP4)", stream.VideoQuality.Label, true));
+                long estimatedBytes = stream.Size.Bytes + (preferredAudio?.Size.Bytes ?? 0);
+                cmbQuality.Items.Add(new QualityOption($"{stream.VideoQuality.Label} (MP4)", stream.VideoQuality.Label, true, estimatedBytes));
             }
 
             cmbQuality.Items.Add(new QualityOption("오디오 전용 (MP3 320kbps)", "best_mp3", false));
@@ -4642,6 +5278,14 @@ public partial class Form1 : Form
         }
 
         var selectedOption = (QualityOption)cmbQuality.SelectedItem;
+        double sectionStartSeconds = 0;
+        double sectionEndSeconds = 0;
+        bool useSection = chkYoutubeDownloadSection?.Checked == true &&
+            !_pendingYoutubeSourceFeature.StartsWith("위젯 모드", StringComparison.OrdinalIgnoreCase);
+        if (useSection && !TryPromptDownloadSection(
+                out sectionStartSeconds,
+                out sectionEndSeconds,
+                _currentVideoDurationSeconds)) return;
         
         string outputPath = "";
 
@@ -4697,6 +5341,14 @@ public partial class Form1 : Form
             outputPath = sfd.FileName;
         }
 
+        long estimatedBytes = selectedOption.EstimatedBytes;
+        if (estimatedBytes > 0 && useSection && _currentVideo?.Duration is TimeSpan duration && duration.TotalSeconds > 0)
+        {
+            double ratio = Math.Clamp((sectionEndSeconds - sectionStartSeconds) / duration.TotalSeconds, 0.01, 1);
+            estimatedBytes = (long)(estimatedBytes * ratio);
+        }
+        if (!ConfirmDownloadSpace(outputPath, estimatedBytes)) return;
+
         var item = new ListViewItem(_customTitle);
         item.SubItems.Add(selectedOption.Title);
         item.SubItems.Add("대기 중");
@@ -4715,6 +5367,10 @@ public partial class Form1 : Form
             CustomFileName = _customTitle,
             DownloadSubtitles = chkYoutubeDownloadSubtitles.Checked,
             SubtitleLanguagePreset = GetSelectedSubtitlePreset(cmbYoutubeSubtitleLanguage),
+            EmbedMetadata = chkYoutubeEmbedMetadata?.Checked == true,
+            RemoveSponsorSegments = chkYoutubeSponsorBlock?.Checked == true,
+            SectionStartSeconds = sectionStartSeconds,
+            SectionEndSeconds = sectionEndSeconds,
             SourceFeature = _pendingYoutubeSourceFeature
         };
         
@@ -4728,6 +5384,7 @@ public partial class Form1 : Form
         cmbQuality.Items.Clear();
         cmbQuality.Enabled = false;
         _currentVideo = null!;
+        _currentVideoDurationSeconds = null;
         _streamManifest = null!;
         _customTitle = "";
         _currentUrl = "";
@@ -4752,7 +5409,13 @@ public partial class Form1 : Form
         out string rejectReason,
         int playlistItemIndex = 0,
         string preferredTitle = "",
-        string sourceFeature = "웹사이트 영상 다운")
+        string sourceFeature = "웹사이트 영상 다운",
+        bool? downloadSubtitles = null,
+        string? subtitlePreset = null,
+        bool? embedMetadata = null,
+        bool removeSponsorSegments = false,
+        double sectionStartSeconds = 0,
+        double sectionEndSeconds = 0)
     {
         rejectReason = "";
         if (!TryNormalizeHttpUrl(url, out url))
@@ -4807,9 +5470,18 @@ public partial class Form1 : Form
                 Directory.CreateDirectory(savePath);
             }
         }
+        if (!ConfirmDownloadSpace(savePath))
+        {
+            rejectReason = "저장 공간 확인이 취소되었습니다.";
+            return false;
+        }
+
+        bool effectiveDownloadSubtitles = downloadSubtitles ?? chkYtDlpDownloadSubtitles.Checked;
+        string effectiveSubtitlePreset = subtitlePreset ?? GetSelectedSubtitlePreset(cmbYtDlpSubtitleLanguage);
+        bool effectiveEmbedMetadata = embedMetadata ?? (chkYtDlpEmbedMetadata?.Checked == true);
 
         var item = new ListViewItem(url);
-        item.SubItems.Add(chkYtDlpDownloadSubtitles.Checked ? "켜짐" : "꺼짐");
+        item.SubItems.Add(effectiveDownloadSubtitles ? "켜짐" : "꺼짐");
         item.SubItems.Add("대기 중");
         lvYtDlpQueue.Items.Add(item);
         ResizeYtDlpQueueColumns();
@@ -4828,8 +5500,12 @@ public partial class Form1 : Form
             Id = Guid.NewGuid().ToString("N"),
             Url = url,
             SavePath = savePath,
-            DownloadSubtitles = chkYtDlpDownloadSubtitles.Checked,
-            SubtitleLanguagePreset = GetSelectedSubtitlePreset(cmbYtDlpSubtitleLanguage),
+            DownloadSubtitles = effectiveDownloadSubtitles,
+            SubtitleLanguagePreset = effectiveSubtitlePreset,
+            EmbedMetadata = effectiveEmbedMetadata,
+            RemoveSponsorSegments = removeSponsorSegments,
+            SectionStartSeconds = sectionStartSeconds,
+            SectionEndSeconds = sectionEndSeconds,
             FormatSelector = GetYtDlpFormatForDefaultQuality(),
             OutputNameTemplate = BuildYtDlpOutputNameTemplate(GetSiteNameFromUrl(url)),
             PreferredTitle = string.IsNullOrWhiteSpace(preferredTitle) ? _loginBrowserDownloadTitle : preferredTitle,
@@ -4869,7 +5545,8 @@ public partial class Form1 : Form
         {
             while (true)
             {
-                var workers = Enumerable.Range(0, MaxYtDlpParallelDownloads)
+                int workerCount = Math.Clamp(SettingsManager.Settings.ConcurrentDownloads, 1, 5);
+                var workers = Enumerable.Range(0, workerCount)
                     .Select(_ => ProcessYtDlpQueueWorkerAsync())
                     .ToArray();
 
@@ -4969,7 +5646,11 @@ public partial class Form1 : Form
                 FormatSelector = job.FormatSelector,
                 OutputNameTemplate = job.OutputNameTemplate,
                 PreferredTitle = job.PreferredTitle,
-                PlaylistItemIndex = job.PlaylistItemIndex
+                PlaylistItemIndex = job.PlaylistItemIndex,
+                EmbedMetadata = job.EmbedMetadata,
+                RemoveSponsorSegments = job.RemoveSponsorSegments,
+                SectionStartSeconds = job.SectionStartSeconds,
+                SectionEndSeconds = job.SectionEndSeconds
             };
 
             downloader.OnProgressChanged += progress =>
@@ -5214,7 +5895,10 @@ public partial class Form1 : Form
                     lblYtDlpStatus.Text = "콰이쇼우 연결을 다시 확인하고 있습니다...";
                 });
 
-            UpdateYtDlpJobStatus(job, downloader.LastSubtitleDownloaded ? "완료 + 자막" : "완료");
+            string completedStatus = downloader.LastSubtitleDownloaded ? "완료 + 자막" : "완료";
+            if (downloader.LastSponsorBlockFallback) completedStatus = "완료 (원본 저장)";
+            else if (downloader.LastMetadataFallback) completedStatus = "완료 (게시 정보 제외)";
+            UpdateYtDlpJobStatus(job, completedStatus);
             Notify("다운로드 완료", "웹사이트 영상 다운로드가 완료되었습니다.");
             ShowCompletedFileQuickUse(finalFilePath);
 
@@ -5357,6 +6041,13 @@ public partial class Form1 : Form
         string url = txtYtDlpUrl.Text.Trim();
         if (!_isInternalYtDlpRun)
         {
+            List<string> urls = ExtractHttpUrls(url);
+            if (urls.Count > 1)
+            {
+                await ConfirmAndQueueMultipleUrlsAsync(urls, fromYoutubeTab: false);
+                return;
+            }
+
             if (string.IsNullOrEmpty(url))
             {
                 ShowCenteredMessage("다운로드할 URL을 입력해 주세요.", "알림", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -5375,7 +6066,20 @@ public partial class Form1 : Form
                 return;
             }
 
-            EnqueueYtDlpDownload(url);
+            double sectionStartSeconds = 0;
+            double sectionEndSeconds = 0;
+            if (chkYtDlpDownloadSection?.Checked == true &&
+                !TryPromptDownloadSection(out sectionStartSeconds, out sectionEndSeconds))
+            {
+                return;
+            }
+
+            EnqueueYtDlpDownload(
+                url,
+                allowFolderPrompt: true,
+                out _,
+                sectionStartSeconds: sectionStartSeconds,
+                sectionEndSeconds: sectionEndSeconds);
             return;
         }
 
@@ -5394,6 +6098,14 @@ public partial class Form1 : Form
         if (!string.IsNullOrEmpty(url) && LooksLikeYouTubeInput(url) && !_isLoginBrowserMode)
         {
             await RouteToYoutubeDownloadAsync(url);
+            return;
+        }
+
+        double internalSectionStartSeconds = 0;
+        double internalSectionEndSeconds = 0;
+        if (chkYtDlpDownloadSection?.Checked == true &&
+            !TryPromptDownloadSection(out internalSectionStartSeconds, out internalSectionEndSeconds))
+        {
             return;
         }
 
@@ -5439,7 +6151,10 @@ public partial class Form1 : Form
                 SubtitleLanguages = GetSubtitleLanguageArgument(GetSelectedSubtitlePreset(cmbYtDlpSubtitleLanguage)),
                 FormatSelector = GetYtDlpFormatForDefaultQuality(),
                 OutputNameTemplate = BuildYtDlpOutputNameTemplate(GetSiteNameFromUrl(url)),
-                PreferredTitle = _loginBrowserDownloadTitle
+                PreferredTitle = _loginBrowserDownloadTitle,
+                EmbedMetadata = chkYtDlpEmbedMetadata?.Checked == true,
+                SectionStartSeconds = internalSectionStartSeconds,
+                SectionEndSeconds = internalSectionEndSeconds
             };
             downloader.OnProgressChanged += (progress) =>
             {
@@ -5988,6 +6703,16 @@ public partial class Form1 : Form
         return subtitlePath;
     }
 
+    private static AudioOnlyStreamInfo? GetPreferredYoutubeAudioStream(StreamManifest? manifest)
+    {
+        if (manifest == null) return null;
+
+        return manifest.GetAudioOnlyStreams()
+            .OrderByDescending(stream => stream.IsAudioLanguageDefault == true)
+            .ThenByDescending(stream => stream.Bitrate.BitsPerSecond)
+            .FirstOrDefault();
+    }
+
     private async Task ProcessDownloadQueueAsync()
     {
         _isDownloading = true;
@@ -6061,7 +6786,7 @@ public partial class Form1 : Form
                     }
                 });
 
-                if (job.Manifest == null)
+                if (job.Manifest == null || job.EmbedMetadata || job.RemoveSponsorSegments || job.SectionEndSeconds > job.SectionStartSeconds)
                 {
                     // yt-dlp fallback job
                     await DownloadYoutubeWithYtDlpFallbackAsync(job);
@@ -6069,7 +6794,7 @@ public partial class Form1 : Form
                 }
 
                 IStreamInfo[] targetStreams;
-                var audioStream = job.Manifest.GetAudioOnlyStreams().GetWithHighestBitrate();
+                var audioStream = GetPreferredYoutubeAudioStream(job.Manifest);
                 if (audioStream == null)
                     throw new InvalidOperationException("YouTube manifest contains no audio stream.");
 
@@ -6226,7 +6951,7 @@ public partial class Form1 : Form
             ProcessStartInfo psi = new ProcessStartInfo
             {
                 FileName = ytDlpPath,
-                Arguments = $"--ignore-config --encoding utf-8 --no-playlist --playlist-items 1 {GetYtDlpJavaScriptRuntimeArguments()}--print \"%(title)s|%(thumbnail)s\" \"{url}\"",
+                Arguments = $"--ignore-config --encoding utf-8 --no-playlist --playlist-items 1 {GetYtDlpJavaScriptRuntimeArguments()}--print \"%(title)s\t%(thumbnail)s\t%(duration)s\" \"{url}\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
@@ -6271,15 +6996,25 @@ public partial class Form1 : Form
 
             }
 
-            var parts = output.Split('|', 2);
+            var parts = output.Split('\t', 3);
             _customTitle = parts[0].Trim();
             if (LooksLikeUnreadableTitle(_customTitle))
             {
                 _customTitle = $"YouTube_Video_{DateTime.Now:yyyyMMdd_HHmmss}";
             }
             string thumbUrl = parts.Length > 1 ? parts[1].Trim() : "";
+            _currentVideoDurationSeconds = parts.Length > 2 &&
+                double.TryParse(
+                    parts[2].Trim(),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out double durationSeconds) && durationSeconds > 0
+                ? durationSeconds
+                : null;
 
-            lblVideoTitle.Text = _customTitle;
+            lblVideoTitle.Text = _currentVideoDurationSeconds is > 0
+                ? $"{_customTitle}\n길이: {FormatSectionTime(_currentVideoDurationSeconds.Value)}"
+                : _customTitle;
             
             if (!string.IsNullOrEmpty(thumbUrl))
             {
@@ -6371,7 +7106,13 @@ public partial class Form1 : Form
             outputTemplate = Path.Combine(directory, $"{siteTemplate}.%(ext)s");
         }
 
-        string arguments = $"--ignore-config --newline --encoding utf-8 --no-playlist --playlist-items 1 --paths temp:\"{job.TemporaryDownloadDirectory}\" --print \"after_move:MMT_FILE:%(filepath)s\" {GetYtDlpJavaScriptRuntimeArguments()}--ffmpeg-location \"{ffmpegDir}\" ";
+        string arguments = $"--ignore-config --newline --encoding utf-8 --no-playlist --playlist-items 1 -S \"lang\" --paths temp:\"{job.TemporaryDownloadDirectory}\" --print \"after_move:MMT_FILE:%(filepath)s\" {GetYtDlpJavaScriptRuntimeArguments()}--ffmpeg-location \"{ffmpegDir}\" ";
+
+        if (job.SectionEndSeconds > job.SectionStartSeconds)
+        {
+            string section = $"*{FormatSectionTime(job.SectionStartSeconds)}-{FormatSectionTime(job.SectionEndSeconds)}";
+            arguments += $"--download-sections \"{section}\" --force-keyframes-at-cuts ";
+        }
 
         if (isAudioOnly)
         {
@@ -6385,6 +7126,16 @@ public partial class Form1 : Form
         if (job.DownloadSubtitles)
         {
             arguments += $"--write-auto-subs --write-subs --sub-langs \"{GetSubtitleLanguageArgument(job.SubtitleLanguagePreset)}\" --embed-subs ";
+        }
+
+        if (job.EmbedMetadata)
+        {
+            arguments += "--embed-metadata --embed-thumbnail --embed-chapters ";
+        }
+
+        if (job.RemoveSponsorSegments)
+        {
+            arguments += "--sponsorblock-remove sponsor ";
         }
 
         arguments += $"-o \"{outputTemplate}\" \"{sourceUrl}\"";
@@ -6446,6 +7197,30 @@ public partial class Form1 : Form
 
         job.JobCts.Token.ThrowIfCancellationRequested();
 
+        if (process.ExitCode != 0 && job.RemoveSponsorSegments &&
+            IsSponsorBlockProcessFailure(processLog.ToString()))
+        {
+            CleanupManager.DeleteTemporaryPath(job.TemporaryDownloadDirectory);
+            CleanupManager.DeleteCanceledDownloadArtifacts(job.OutputPath, deleteOutputFile: true);
+            job.RemoveSponsorSegments = false;
+            await DownloadYoutubeWithYtDlpFallbackAsync(job);
+            if (!this.IsDisposed && !this.Disposing && lvQueue.Items.Contains(job.ListViewItem))
+                job.ListViewItem.SubItems[2].Text = "완료 (원본 저장)";
+            return;
+        }
+
+        if (process.ExitCode != 0 && job.EmbedMetadata &&
+            IsMetadataProcessFailure(processLog.ToString()))
+        {
+            CleanupManager.DeleteTemporaryPath(job.TemporaryDownloadDirectory);
+            CleanupManager.DeleteCanceledDownloadArtifacts(job.OutputPath, deleteOutputFile: true);
+            job.EmbedMetadata = false;
+            await DownloadYoutubeWithYtDlpFallbackAsync(job);
+            if (!this.IsDisposed && !this.Disposing && lvQueue.Items.Contains(job.ListViewItem))
+                job.ListViewItem.SubItems[2].Text = "완료 (게시 정보 제외)";
+            return;
+        }
+
         if (process.ExitCode != 0 && !File.Exists(outputTemplate))
         {
             string detail = processLog.ToString().Trim();
@@ -6475,6 +7250,28 @@ public partial class Form1 : Form
             string folder = Path.GetDirectoryName(completedFilePath);
             OpenFolder(folder);
         }
+    }
+
+    private static bool IsSponsorBlockProcessFailure(string output)
+    {
+        if (string.IsNullOrWhiteSpace(output)) return false;
+        return output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Any(line =>
+                (line.Contains("SponsorBlock", StringComparison.OrdinalIgnoreCase) ||
+                 line.Contains("ModifyChapters", StringComparison.OrdinalIgnoreCase)) &&
+                (line.Contains("ERROR", StringComparison.OrdinalIgnoreCase) ||
+                 line.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+                 line.Contains("unable", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static bool IsMetadataProcessFailure(string output)
+    {
+        if (string.IsNullOrWhiteSpace(output)) return false;
+        return output.Contains("EmbedThumbnail", StringComparison.OrdinalIgnoreCase) ||
+               output.Contains("Metadata", StringComparison.OrdinalIgnoreCase) &&
+               output.Contains("PostProcessingError", StringComparison.OrdinalIgnoreCase) ||
+               output.Contains("Unable to embed thumbnail", StringComparison.OrdinalIgnoreCase) ||
+               output.Contains("AtomicParsley", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool HasSubtitleOutputForJob(DownloadJob job, string processLog)
@@ -7082,6 +7879,7 @@ public partial class Form1 : Form
                 ? "{title}"
                 : txtCustomFileNameTemplate.Text.Trim();
             SettingsManager.Settings.DefaultVideoQuality = GetQualityValue(cmbDefaultVideoQuality?.Text);
+            SettingsManager.Settings.ConcurrentDownloads = GetConcurrentDownloadsValue(cmbConcurrentDownloads?.Text);
             string subtitlePreset = chkYtDlpDownloadSubtitles.Checked
                 ? GetSelectedSubtitlePreset(cmbYtDlpSubtitleLanguage)
                 : GetSelectedSubtitlePreset(cmbYoutubeSubtitleLanguage);
@@ -11612,6 +12410,10 @@ finally {
         public string CustomFileName { get; set; } = "";
         public bool DownloadSubtitles { get; set; }
         public string SubtitleLanguagePreset { get; set; } = "Ko";
+        public bool EmbedMetadata { get; set; }
+        public bool RemoveSponsorSegments { get; set; }
+        public double SectionStartSeconds { get; set; }
+        public double SectionEndSeconds { get; set; }
         public string SourceFeature { get; set; } = "유튜브 다운로더";
         public string TemporaryDownloadDirectory { get; set; } = "";
         public bool MediaDownloadCompleted { get; set; }
@@ -11624,6 +12426,10 @@ finally {
         public string SavePath { get; set; } = "";
         public bool DownloadSubtitles { get; set; }
         public string SubtitleLanguagePreset { get; set; } = "Ko";
+        public bool EmbedMetadata { get; set; }
+        public bool RemoveSponsorSegments { get; set; }
+        public double SectionStartSeconds { get; set; }
+        public double SectionEndSeconds { get; set; }
         public string FormatSelector { get; set; } = "";
         public string OutputNameTemplate { get; set; } = "%(title)s";
         public string PreferredTitle { get; set; } = "";
@@ -11811,14 +12617,18 @@ finally {
         public string Title { get; set; }
         public string Id { get; set; }
         public bool IsVideo { get; set; }
+        public long EstimatedBytes { get; set; }
 
-        public QualityOption(string title, string id, bool isVideo)
+        public QualityOption(string title, string id, bool isVideo, long estimatedBytes = 0)
         {
             Title = title;
             Id = id;
             IsVideo = isVideo;
+            EstimatedBytes = estimatedBytes;
         }
-        public override string ToString() => Title;
+        public override string ToString() => EstimatedBytes > 0
+            ? $"{Title}  ·  예상 {FormatFileSize(EstimatedBytes)}"
+            : Title;
     }
 
     private class SubtitleOption

@@ -34,6 +34,10 @@ public class AppSettings
     public string CustomFileNameTemplate { get; set; } = "{title}";
     public string DefaultVideoQuality { get; set; } = "Best";
     public string SubtitleLanguagePreset { get; set; } = "Ko";
+    public int ConcurrentDownloads { get; set; } = 3;
+    public bool YoutubeEmbedMetadata { get; set; } = false;
+    public bool YoutubeRemoveSponsorSegments { get; set; } = false;
+    public bool WebsiteEmbedMetadata { get; set; } = false;
     public bool EnableWidgetMode { get; set; } = false;
     public bool EnableCompletedFileQuickUse { get; set; } = false;
     public int WidgetLocationX { get; set; } = int.MinValue;
